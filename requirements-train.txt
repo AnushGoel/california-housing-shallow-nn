@@ -1,7 +1,7 @@
 # Training environment for notebooks/california_housing_shallow_nn.ipynb (Google Colab already has these).
 tensorflow>=2.15
 scikit-learn>=1.3
-scipy>=1.10
+scipy>=1.15.3
 pandas>=2.0
 numpy>=1.26
 matplotlib>=3.7
