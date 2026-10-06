@@ -1,0 +1,6 @@
+# Runtime for the Streamlit app. Streamlit Community Cloud installs this file automatically.
+streamlit>=1.37,<2
+plotly>=5.24,<7
+pandas>=2.0
+numpy>=1.26
+boto3>=1.34          # only used when cloud storage is configured in the app's secrets

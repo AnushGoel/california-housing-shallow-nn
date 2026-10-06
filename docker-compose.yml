@@ -1,0 +1,10 @@
+# Dashboard on http://localhost:8501 and API on http://localhost:8000/docs:  docker compose up --build
+services:
+  app:
+    build: .
+    ports: ["8501:8501"]
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    ports: ["8000:8000"]

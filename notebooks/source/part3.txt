@@ -1,0 +1,1168 @@
+# %% [markdown]
+<a id="ext-a"></a>
+
+## 5b. Extension: hyperparameter search (validation data only)
+
+The core protocol fixes Adam's default learning rate and a single batch size, and Steps 4 and 5 respect both. This extension asks a different question: how much better can a *shallow* network get on these data if its remaining hyperparameters are tuned? Three constraints keep the answer honest. The architecture stays shallow, with one hidden layer. The batch size stays at 64, so the one-batch-size rule still holds. And the search uses only the training and validation sets, before the test set is opened in Step 6.
+
+| Hyperparameter | Values searched | Why it is in the search |
+|---|---|---|
+| Hidden units | 32, 64, 128, 256, 512 | extends the capacity range of Step 4 |
+| Activation | ReLU, ELU, GELU, tanh | adds two smooth relatives of ReLU (Clevert et al., 2016; Hendrycks & Gimpel, 2016); sigmoid is dropped after Step 5 |
+| Adam learning rate | log-uniform between 0.0003 and 0.01 | the setting that most often decides how well Adam trains (Kingma & Ba, 2014) |
+| L2 weight decay | 0, 1e-6, 1e-5, 1e-4 | penalises large weights (Krogh & Hertz, 1992) |
+| Dropout after the hidden layer | 0, 0.1, 0.2 | randomly silences hidden units during training (Srivastava et al., 2014) |
+| Feature transform | standardised raw features, or log1p of the four heavy-tailed counts followed by standardisation | tests the heavy-tail hypothesis from Step 1 |
+
+**Training protocol for every trial.** Up to 300 epochs, early stopping on validation MSE with a patience of 20 epochs and restoration of the best weights (Prechelt, 2012), and a halving of the learning rate whenever validation MSE stalls for 8 epochs. Trials are compared on validation MSE *without* the L2 penalty, so weight decay cannot make a trial look better or worse through its penalty term alone.
+
+**Why random search.** With a fixed budget, random sampling covers each individual hyperparameter more densely than a grid does, which matters when only a few of them have a real effect (Bergstra & Bengio, 2012). Trial 0 is an anchor: the configuration selected in Steps 4 and 5, trained under the new protocol, which separates the effect of the protocol from the effect of the hyperparameters.
+
+**The winner's curse.** Picking the best of 25 noisy scores rewards luck as well as quality, so the winning validation score is biased downwards (Cawley & Talbot, 2010). To reduce that bias, the three best configurations are retrained with two more seeds, and the champion is the configuration with the lowest mean.
+
+### 5b.1 A log-transformed copy of the features
+
+# %%
+LOG_FEATURES = ["AveRooms", "AveBedrms", "Population", "AveOccup"]
+LOG_IDX = [FEATURES.index(f) for f in LOG_FEATURES]
+
+
+def log1p_heavy(X):
+    """log(1 + x) for the four heavy-tailed count features; every other column is unchanged."""
+    out = np.array(X, dtype=np.float64, copy=True)
+    out[:, LOG_IDX] = np.log1p(out[:, LOG_IDX])
+    return out
+
+
+scaler_log = StandardScaler().fit(log1p_heavy(X_train))      # fitted on training rows only, as in Step 2
+X_train_l, X_val_l, X_test_l = (scaler_log.transform(log1p_heavy(X)).astype(np.float32)
+                                for X in (X_train, X_val, X_test))
+DATA["log"] = (X_train_l, y_train, X_val_l, y_val)
+VAL_INPUTS = {"raw": X_val_s, "log": X_val_l}
+TEST_INPUTS = {"raw": X_test_s, "log": X_test_l}
+
+display(pd.DataFrame({"largest |z|, standardised raw features": np.abs(X_train_s).max(axis=0),
+                      "largest |z|, log1p then standardised": np.abs(X_train_l).max(axis=0)},
+                     index=FEATURES).round(1))
+
+# %% [markdown]
+### 5b.2 Random search
+
+# %%
+SPACE = {
+    "hidden_units": [32, 64, 128, 256, 512],
+    "activation": ["relu", "elu", "gelu", "tanh"],
+    "lr": [3e-4, 1e-2],                    # bounds; sampled log-uniformly
+    "l2": [0.0, 1e-6, 1e-5, 1e-4],
+    "dropout": [0.0, 0.1, 0.2],
+    "features": ["raw", "log"],
+}
+HP_COLS = ["hidden_units", "activation", "lr", "l2", "dropout", "features"]
+search_rng = np.random.default_rng(SEED)
+
+
+def sample_params(rng):
+    lo, hi = np.log(SPACE["lr"][0]), np.log(SPACE["lr"][1])
+    return {"hidden_units": int(rng.choice(SPACE["hidden_units"])),
+            "activation": str(rng.choice(SPACE["activation"])),
+            "lr": float(np.round(np.exp(rng.uniform(lo, hi)), 6)),
+            "l2": float(rng.choice(SPACE["l2"])),
+            "dropout": float(rng.choice(SPACE["dropout"])),
+            "features": str(rng.choice(SPACE["features"]))}
+
+
+def hpo_cfg(p, seed=SEED):
+    return make_cfg(p["hidden_units"], p["activation"], seed=seed, epochs=HPO_MAX_EPOCHS, lr=p["lr"], l2=p["l2"],
+                    dropout=p["dropout"], patience=HPO_PATIENCE, reduce_lr=True, features=p["features"])
+
+
+anchor = {"hidden_units": CHOSEN_UNITS, "activation": CHOSEN_ACT, "lr": 0.001, "l2": 0.0, "dropout": 0.0, "features": "raw"}
+trial_params = [anchor] + [sample_params(search_rng) for _ in range(HPO_TRIALS)]
+print(f"{len(trial_params)} trials: one anchor plus {HPO_TRIALS} random configurations\n")
+hpo_runs = [run_experiment(hpo_cfg(p), name=f"hpo{i:02d}") for i, p in enumerate(trial_params)]
+
+# %%
+trials = pd.DataFrame([{**{k: r["cfg"][k] for k in HP_COLS}, "best val MSE": r["best_val_loss"],
+                        "best epoch": r["best_epoch"], "epochs run": r["epochs_run"], "minutes": r["seconds"] / 60}
+                       for r in hpo_runs])
+trials.index.name = "trial"
+print("Ten best trials by validation MSE:")
+display(trials.sort_values("best val MSE").head(10).round({"lr": 5, "best val MSE": 4, "minutes": 2}))
+
+# %% [markdown]
+### 5b.3 Re-running the top three configurations on more seeds
+
+# %%
+top3 = trials.nsmallest(3, "best val MSE").index.tolist()
+confirm_runs = {t: {s: (hpo_runs[t] if s == SEED else
+                        run_experiment(hpo_cfg(trial_params[t], seed=s), name=f"hpo{t:02d}_s{s}"))
+                    for s in HPO_CONFIRM_SEEDS}
+                for t in top3}
+confirm_table = seed_summary(confirm_runs)
+confirm_table.index.name = "trial"
+CHAMP_TRIAL = int(confirm_table["mean best val loss"].idxmin())
+champion = hpo_runs[CHAMP_TRIAL]
+CHAMP_FEATURES = champion["cfg"]["features"]
+display(confirm_table.round(4))
+print(f"Champion: trial {CHAMP_TRIAL} with " + ", ".join(f"{k} = {champion['cfg'][k]}" for k in HP_COLS))
+
+# %%
+def encode_axes(df, cols):
+    """Map each hyperparameter to [0, 1] for a parallel-coordinates plot."""
+    enc, ticks = {}, {}
+    for c in cols:
+        if c == "lr":
+            lo, hi = np.log10(SPACE["lr"][0]), np.log10(SPACE["lr"][1])
+            enc[c] = (np.log10(df[c].astype(float)) - lo) / (hi - lo)
+            ticks[c] = [((np.log10(t) - lo) / (hi - lo), f"{t:g}") for t in (3e-4, 1e-3, 3e-3, 1e-2)]
+        else:
+            levels = list(dict.fromkeys(list(SPACE[c]) + sorted(set(df[c]) - set(SPACE[c]), key=str)))
+            pos = {lvl: k / max(len(levels) - 1, 1) for k, lvl in enumerate(levels)}
+            enc[c] = df[c].map(pos)
+            ticks[c] = [(pos[l], f"{l:g}" if isinstance(l, float) else str(l)) for l in levels]
+    return pd.DataFrame(enc), ticks
+
+
+enc, ticks = encode_axes(trials, HP_COLS)
+score = trials["best val MSE"]
+norm = mpl.colors.Normalize(vmin=score.min(), vmax=score.quantile(0.9))
+cmap = mpl.colormaps["viridis_r"]
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 4.9), gridspec_kw={"width_ratios": [1.7, 1]})
+ax = axes[0]
+xs = np.arange(len(HP_COLS))
+for t in score.sort_values(ascending=False).index:          # best trials drawn last, on top
+    ax.plot(xs, enc.loc[t, HP_COLS].to_numpy(dtype=float), color=cmap(norm(score[t])), lw=1.3, alpha=0.8)
+ax.plot(xs, enc.loc[0, HP_COLS].to_numpy(dtype=float), color=INK, lw=1.6, ls="--", label="anchor (trial 0)")
+ax.plot(xs, enc.loc[CHAMP_TRIAL, HP_COLS].to_numpy(dtype=float), color=REDWOOD, lw=3, label=f"champion (trial {CHAMP_TRIAL})")
+for k, c in enumerate(HP_COLS):
+    ax.axvline(k, color="#B9C2CA", lw=0.9, zorder=0)
+    for p, lab in ticks[c]:
+        ax.text(k + 0.05, p, lab, fontsize=8, va="center", color=INK, path_effects=HALO)
+ax.set_xticks(xs, HP_COLS)
+ax.set_yticks([])
+ax.set_ylim(-0.06, 1.06)
+ax.grid(False)
+ax.spines["left"].set_visible(False)
+ax.legend(loc="lower left", frameon=True, framealpha=0.92)
+ax.set_title("Every trial as one line (darker = lower validation MSE)")
+fig.colorbar(mpl.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, fraction=0.03, pad=0.01, label="best validation MSE")
+
+ax = axes[1]
+ax.scatter(trials.index, score, color=[cmap(norm(v)) for v in score], s=42, edgecolor="white", zorder=3)
+ax.step(trials.index, score.cummin(), where="post", color=REDWOOD, lw=2, label="best so far")
+ax.axhline(FINAL_RES["best_val_loss"], color=INK, ls=":", lw=1.2, label=f"Step 5 model ({FINAL_RES['best_val_loss']:.4f})")
+ax.set_ylim(score.min() * 0.97, min(score.max(), score.quantile(0.9) * 1.25))
+ax.set_xlabel("Trial (0 = anchor)")
+ax.set_ylabel("Best validation MSE")
+ax.legend(loc="upper right")
+ax.set_title("Search progress")
+gain = 100 * (1 - champion["best_val_loss"] / FINAL_RES["best_val_loss"])
+headline(fig, "Random search over shallow-network hyperparameters (validation data only)",
+         f"Champion: trial {CHAMP_TRIAL}, validation MSE {champion['best_val_loss']:.4f}, which is {gain:.1f}% below "
+         f"the Step 5 model's {FINAL_RES['best_val_loss']:.4f}")
+plt.show()
+
+# %%
+feat_c = {"raw": PACIFIC, "log": POPPY}
+y_top = min(score.max(), score.quantile(0.9) * 1.25)
+jit = np.random.default_rng(1)
+fig, axes = plt.subplots(2, 3, figsize=(14, 7.4), sharey=True)
+for ax, c in zip(axes.ravel(), HP_COLS):
+    colors = trials["features"].map(feat_c).fillna(SUBTLE).tolist()
+    if c == "lr":
+        ax.scatter(trials["lr"], score, c=colors, s=40, edgecolor="white", linewidth=0.5)
+        ax.set_xscale("log")
+        ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    else:
+        n_lv = len(ticks[c])
+        xpos = enc[c] * (n_lv - 1) + jit.uniform(-0.12, 0.12, len(trials))
+        ax.scatter(xpos, score, c=colors, s=40, edgecolor="white", linewidth=0.5)
+        ax.set_xticks([p * (n_lv - 1) for p, _ in ticks[c]], [lab for _, lab in ticks[c]])
+    ax.axhline(FINAL_RES["best_val_loss"], color=INK, ls=":", lw=1)
+    ax.set_ylim(score.min() * 0.97, y_top)
+    ax.set_title(c)
+for ax in axes[:, 0]:
+    ax.set_ylabel("Best validation MSE")
+axes[0, 0].legend(handles=[Line2D([], [], marker="o", ls="", color=PACIFIC, label="raw features"),
+                           Line2D([], [], marker="o", ls="", color=POPPY, label="log1p features")], loc="upper right")
+clipped = int((score > y_top).sum())
+headline(fig, "Which hyperparameters mattered?",
+         "Each dot is one trial; the dotted line is the Step 5 model's best validation MSE"
+         + (f"; {clipped} poor trial(s) above the plotted range" if clipped else ""))
+plt.show()
+
+# %%
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.3), sharey=True)
+plot_curves(axes[0], FINAL_RES)
+axes[0].set_title(f"Step 5 model: {CHOSEN_UNITS} {CHOSEN_ACT}, Adam defaults, {EPOCHS} epochs")
+plot_curves(axes[1], champion)
+axes[1].set_title(f"Champion (trial {CHAMP_TRIAL}): {champion['cfg']['hidden_units']} {champion['cfg']['activation']}, "
+                  f"lr {champion['cfg']['lr']:g}, {champion['cfg']['features']} features")
+for ax in axes:
+    nice_log_y(ax)
+    ax.legend(loc="upper right")
+axes[0].set_ylabel("MSE (log scale)")
+headline(fig, "Learning curves: the reference protocol against the tuned champion",
+         f"The champion stopped after {champion['epochs_run']} epochs and kept the weights from epoch {champion['best_epoch']}")
+plt.show()
+
+# %% [markdown]
+### 5b.4 Validation scores in context
+
+Two simple reference models and one strong one put the network's validation error in perspective. They are fitted on the training rows only. Like everything in this section, the comparison uses validation data; note that the two network scores are slightly optimistic, because each network was itself chosen for having a low validation loss (Cawley & Talbot, 2010).
+
+# %%
+ref_fitted = {
+    "Mean predictor (ignores the features)": DummyRegressor(strategy="mean").fit(X_train_s, y_train),
+    "Linear regression": LinearRegression().fit(X_train_s, y_train),
+    "Gradient-boosted trees (HistGradientBoosting)": HistGradientBoostingRegressor(random_state=SEED).fit(X_train_s, y_train),
+}
+CORE_NAME = f"Shallow NN, reference protocol ({CHOSEN_UNITS} {CHOSEN_ACT})"
+TUNED_NAME = f"Shallow NN, tuned (trial {CHAMP_TRIAL})"
+val_rows = {CORE_NAME: scores(y_val, predict(restore_model(FINAL_RES), X_val_s)),
+            TUNED_NAME: scores(y_val, predict(restore_model(champion), VAL_INPUTS[CHAMP_FEATURES]))}
+val_rows.update({name: scores(y_val, est.predict(X_val_s)) for name, est in ref_fitted.items()})
+val_comparison = pd.DataFrame(val_rows).T
+val_comparison["MAE ($)"] = val_comparison["MAE"] * DOLLARS
+display(val_comparison.round({"MSE": 4, "MAE": 4, "R2": 4, "MAE ($)": 0}))
+
+# %% [markdown]
+### 5b.5 Interpretation of the search
+
+The search found a better shallow network on validation data, but only by a small margin, and the gain did not carry over cleanly to every metric. The champion, trial 15, kept 256 ReLU units and added a log transform of the four heavy-tailed features, L2 weight decay of 10⁻⁴ and a lower learning rate (0.0006) under early stopping. It reached a validation MSE of 0.2875, 1.5% below the reference model's 0.2918, and re-training on three seeds confirmed it (mean 0.2867, standard error 0.0004). The gain is therefore not the product of a lucky seed (Cawley & Talbot, 2010).
+
+Three patterns stand out across the 25 trials. First, ReLU dominated: its seven trials averaged 0.297, against 0.334 for tanh, 0.344 for GELU and 0.347 for ELU, so the smooth relatives of ReLU brought nothing here (Clevert et al., 2016; Hendrycks & Gimpel, 2016). Second, the log transform helped modestly. It lowered the mean trial score from 0.332 to 0.324 and supplied the best result, which supports the Step 1 suspicion that heavy tails hurt; it pulls the most extreme standardised value from 100 standard deviations to 27. Third, the training protocol on its own did not help. The anchor trial, the Step 5 configuration trained for 300 epochs with a learning-rate schedule, ended at 0.2919, the same as the 100-epoch run, so the 256-unit ReLU network on raw features had genuinely plateaued.
+
+The reference models put this in perspective. On validation data, gradient-boosted trees reached an MSE of 0.226, well below every network, and linear regression only 0.541. The shallow network sits much closer to the trees than to the linear model, but it does not catch them (Grinsztajn et al., 2022). Tuning also worsened the validation MAE slightly (0.367 against 0.363) while improving the MSE, a reminder that optimising squared error is not the same as optimising typical error.
+
+# %% [markdown]
+<a id="step6"></a>
+
+## 6. Evaluate the final model
+
+Every decision is now fixed: the hidden-layer size from Step 4, the activation from Step 5 and, for the extension, the tuned champion from 5b. Only now is the test set used.
+
+**Which weights, and why.** I retained the model from its best validation epoch instead of retraining. The `BestEpochTracker` callback stored those weights during the seed-42 run of the selected configuration, so the epoch was chosen with validation data only and no further training is needed. This is early stopping with the stopping point read off the validation curve afterwards (Prechelt, 2012). Retraining the same configuration for that number of epochs, the other valid option, would reproduce exactly the same weights because the runs are deterministic, so it would add run time without adding information. The first cell below confirms that the restored weights reproduce the validation loss recorded during training.
+
+**One evaluation.** The second cell evaluates the final model on the test set once. The cell after it evaluates, for context only, the tuned champion and the three reference models from 5b: a mean predictor, ordinary linear regression, and histogram-based gradient-boosted trees in the style of LightGBM (Ke et al., 2017), a model family that remains a strong benchmark on tabular data of this size (Grinsztajn et al., 2022). None of these numbers feeds back into any choice made above.
+
+# %%
+final_model = restore_model(FINAL_RES)
+recheck = final_model.evaluate(X_val_s, y_val, verbose=0, return_dict=True)
+print(f"Validation MSE recorded at epoch {FINAL_RES['best_epoch']} during training: {FINAL_RES['best_val_loss']:.6f}")
+print(f"Validation MSE after restoring those weights            : {float(recheck.get('loss', np.nan)):.6f}")
+
+# %%
+# ---- The single evaluation of the final model on the held-out test set ----
+test_eval = final_model.evaluate(X_test_s, y_test, verbose=0, return_dict=True)
+y_pred_test = predict(final_model, X_test_s)
+
+test_mse = float(test_eval.get("loss", np.mean((y_pred_test - y_test) ** 2)))
+test_mae = float(test_eval.get("mae", np.mean(np.abs(y_pred_test - y_test))))
+test_rmse = float(np.sqrt(test_mse))
+test_r2 = float(r2_score(y_test, y_pred_test))
+
+final_report = pd.Series({
+    "Final model configuration": f"8 inputs -> {CHOSEN_UNITS} {CHOSEN_ACT} units -> 1 linear output; "
+                                 f"Adam (Keras defaults), MSE loss, MAE metric, batch size {BATCH_SIZE}",
+    "Weights used": f"epoch {FINAL_RES['best_epoch']} of {EPOCHS} (lowest validation loss, retained by the callback)",
+    "Trainable parameters": f"{FINAL_RES['n_params']:,}",
+    "Best validation loss (MSE)": f"{FINAL_RES['best_val_loss']:.4f}",
+    "Test MSE": f"{test_mse:.4f}",
+    "Test MAE": f"{test_mae:.4f}",
+    "Test RMSE": f"{test_rmse:.4f}",
+    "Test R squared": f"{test_r2:.4f}",
+    "Number of training epochs": f"{FINAL_RES['best_epoch']} (the run continued to {EPOCHS}; later weights were discarded)",
+    "Test MAE in dollars (MAE x $100,000)": f"${test_mae * DOLLARS:,.0f}",
+    "Test RMSE in dollars": f"${test_rmse * DOLLARS:,.0f}",
+}, name="Final model")
+display(final_report.to_frame())
+print(f"Check: MSE recomputed from the predictions = {np.mean((y_pred_test - y_test) ** 2):.6f}")
+
+# %%
+cap_test = y_test >= TARGET_CAP
+
+
+def group_stats(mask):
+    err = y_pred_test[mask] - y_test[mask]
+    return {"block groups": int(mask.sum()), "share of test set": float(mask.mean()),
+            "MAE": float(np.mean(np.abs(err))), "MAE ($)": float(np.mean(np.abs(err)) * DOLLARS),
+            "mean prediction": float(y_pred_test[mask].mean()), "mean signed error (pred - true)": float(err.mean())}
+
+
+cap_table = pd.DataFrame({"at the $500k ceiling": group_stats(cap_test), "below the ceiling": group_stats(~cap_test)}).T
+display(cap_table.round({"share of test set": 4, "MAE": 4, "MAE ($)": 0, "mean prediction": 3,
+                         "mean signed error (pred - true)": 4}))
+print(f"Predictions above the ceiling of 5.0: {(y_pred_test > TARGET_CAP).sum()} of {len(y_pred_test):,}")
+
+# %%
+champion_model = restore_model(champion)
+y_pred_champ = predict(champion_model, TEST_INPUTS[CHAMP_FEATURES])
+test_rows = {CORE_NAME + " [final model]": scores(y_test, y_pred_test),
+             TUNED_NAME + " [extension]": scores(y_test, y_pred_champ)}
+test_rows.update({name: scores(y_test, est.predict(X_test_s)) for name, est in ref_fitted.items()})
+test_comparison = pd.DataFrame(test_rows).T
+test_comparison["MAE ($)"] = test_comparison["MAE"] * DOLLARS
+print("Context only: these scores were computed after every decision had been made.")
+display(test_comparison.round({"MSE": 4, "MAE": 4, "R2": 4, "MAE ($)": 0}))
+
+# %% [markdown]
+### 6.1 The test error in dollars, and the \$500,000 ceiling
+
+On the 3,096 test block groups the final model's MAE is 0.3493. In dollar terms, approximate dollar MAE = MAE × \$100,000 = 0.3493 × \$100,000 ≈ \$34,929, so on average a prediction misses the true median house value by about \$34,900. For scale, the median block group in the test set is worth about \$178,000, so a typical miss is around a fifth of a typical value. The RMSE is \$51,277 and R² is 0.801: the network explains about four-fifths of the variation in median house values. RMSE is 1.47 times the MAE, a sign that a minority of large misses carries much of the squared error. 78% of predictions are within \$50,000 of the true value and 94% within \$100,000.
+
+The test error is lower than the validation error (MSE 0.263 against 0.292, MAE \$34,929 against \$36,312). Selection bias predicts the opposite, because the validation score belongs to the configuration that won on validation data (Cawley & Talbot, 2010). The likeliest explanation is ordinary sampling variation between two samples of 3,096 block groups. The validation MSE lies just outside the test set's bootstrap interval reported in 6c, an RMSE of 0.489 to 0.537, that is, an MSE of about 0.239 to 0.289. Section 6c tests this explanation with cross-validation.
+
+The \$500,000 ceiling distorts these numbers in a specific way. 141 test block groups, 4.6% of the test set, sit at the cap. For them the MAE is \$83,323, two and a half times the \$32,620 of the rest, and the model under-predicts them by \$80,212 on average, with a mean prediction of about \$420,000. Because the true value of a capped block group is only known to be at least \$500,000, these errors are lower bounds: the real shortfall for an expensive neighbourhood is probably larger, and the headline MAE understates how poorly the model handles the top of the market (Tobin, 1958). The cap also limits what the model can learn. It has never seen a recorded value above \$500,000, yet 12 of its test predictions exceed the cap, and no recorded value can confirm or refute them. The fair reading is that the model is a reasonable guide to the middle of the market and a weak one at the top.
+
+# %% [markdown]
+<a id="ext-b"></a>
+
+## 6b. Extension: where and why the final model errs
+
+These diagnostics use the test predictions from Step 6. They come after every decision has been made, so they describe the final model without influencing it. Residuals are defined as *predicted minus true*, so a positive residual is an over-prediction.
+
+- **Permutation importance** shuffles one feature at a time in the test set and records how much the test MSE rises; a large rise means the model leans on that feature (Breiman, 2001; Fisher et al., 2019). Shuffling one of two correlated features, such as Latitude and Longitude, creates combinations that never occur in reality, so these scores describe the model's reliance on a feature, not a causal effect.
+- **Partial dependence** sweeps one feature across its observed range while every other feature keeps its real values, and averages the predictions (Friedman, 2001). The thin lines are individual block groups; they show whether the average hides different patterns.
+- **The learned location surface** asks the network what a block group with typical characteristics (the training medians) would be worth at each point in California. Grid cells far from any training block group are left blank, because predictions there would be extrapolations.
+
+# %%
+resid = y_pred_test - y_test
+abs_err = np.abs(resid)
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5.0))
+ax = axes[0]
+hi = max(5.4, float(y_pred_test.max()) + 0.1)
+hb = ax.hexbin(y_test, y_pred_test, gridsize=46, cmap="Blues", mincnt=1, bins="log", linewidths=0)
+ax.plot([0, hi], [0, hi], color=INK, lw=1, ls="--", label="perfect prediction")
+ax.axvline(TARGET_CAP, color=REDWOOD, lw=1.2, ls=":", label=f"{usd_plot(500_000)} ceiling")
+ax.set_xlim(0, hi)
+ax.set_ylim(min(0.0, float(y_pred_test.min()) - 0.1), hi)
+ax.set_xlabel("True value (\\$100k)")
+ax.set_ylabel("Predicted value (\\$100k)")
+ax.legend(loc="upper left")
+ax.set_title("Predicted against true, test set")
+fig.colorbar(hb, ax=ax, fraction=0.045, pad=0.02, label="block groups per cell (log scale)")
+
+ax = axes[1]
+edges = np.quantile(y_pred_test, np.linspace(0, 1, 13))
+which = np.clip(np.digitize(y_pred_test, edges[1:-1]), 0, 11)
+bins_used = [k for k in range(12) if np.any(which == k)]
+centers = np.array([y_pred_test[which == k].mean() for k in bins_used])
+groups = [resid[which == k] for k in bins_used]
+ax.scatter(y_pred_test, resid, s=3, alpha=0.18, color=PACIFIC, linewidths=0)
+ax.fill_between(centers, [np.quantile(g, 0.25) for g in groups], [np.quantile(g, 0.75) for g in groups],
+                color=POPPY, alpha=0.28, lw=0, label="middle 50% of residuals")
+ax.plot(centers, [np.median(g) for g in groups], color=POPPY, lw=2.2, marker="o", ms=4, label="median residual")
+ax.axhline(0, color=INK, lw=1, ls="--")
+ax.set_ylim(*np.quantile(resid, [0.003, 0.997]))
+ax.set_xlabel("Predicted value (\\$100k)")
+ax.set_ylabel("Residual, predicted - true (\\$100k)")
+ax.legend(loc="upper right")
+ax.set_title("Residuals against the prediction (12 equal-count bins)")
+headline(fig, "How the final model errs on unseen block groups",
+         f"Test MAE {test_mae:.3f} (about {usd_plot(test_mae * DOLLARS)}), RMSE {test_rmse:.3f}, R² {test_r2:.3f}")
+plt.show()
+
+# %%
+dec_edges = np.quantile(y_test, np.linspace(0, 1, 11))
+dec = np.clip(np.digitize(y_test, dec_edges[1:-1]), 0, 9)
+dec_df = (pd.DataFrame({"decile": dec, "abs_err": abs_err, "resid": resid})
+          .groupby("decile").agg(mae=("abs_err", "mean"), bias=("resid", "mean"), n=("abs_err", "size")))
+dec_df["true value range"] = [f"{dec_edges[k]:.2f}-{dec_edges[k + 1]:.2f}" for k in dec_df.index]
+
+fig, ax = plt.subplots(figsize=(13, 4.4))
+xd = np.arange(len(dec_df))
+ax.bar(xd - 0.2, dec_df["mae"] * DOLLARS, width=0.4, color=PACIFIC, label="mean absolute error")
+ax.bar(xd + 0.2, dec_df["bias"] * DOLLARS, width=0.4, color=POPPY, label="mean signed error (positive = over-prediction)")
+ax.axhline(0, color=INK, lw=1)
+ax.set_xticks(xd, dec_df["true value range"], fontsize=8.5)
+ax.set_xlabel("Decile of the true value (\\$100k)")
+ax.yaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: usd_plot(v / 1000) + "k"))
+ax.legend(loc="upper left")
+pulls = dec_df["bias"].iloc[0] > 0 and dec_df["bias"].iloc[-1] < 0
+headline(fig, "Error by price decile: predictions are pulled towards the middle" if pulls else "Error by price decile",
+         f"Cheapest decile: mean signed error {usd_plot(dec_df['bias'].iloc[0] * DOLLARS)}; most expensive decile: "
+         f"{usd_plot(dec_df['bias'].iloc[-1] * DOLLARS)}; largest MAE in decile {int(dec_df['mae'].idxmax()) + 1}")
+plt.show()
+display(dec_df.assign(**{"MAE ($)": dec_df["mae"] * DOLLARS, "mean signed error ($)": dec_df["bias"] * DOLLARS})
+        [["true value range", "n", "MAE ($)", "mean signed error ($)"]].round(0))
+
+# %%
+lat_t, lon_t = X_test[:, FEATURES.index("Latitude")], X_test[:, FEATURES.index("Longitude")]
+
+
+def near_metro_mask(lat_arr, lon_arr, km=80):
+    mask = np.zeros(len(lat_arr), dtype=bool)
+    for city in ("San Francisco", "Los Angeles"):
+        clat, clon = CITIES[city]
+        dx = (lon_arr - clon) * 111.0 * np.cos(np.deg2rad(clat))
+        mask |= np.hypot(dx, (lat_arr - clat) * 111.0) <= km
+    return mask
+
+
+near_t = near_metro_mask(lat_t, lon_t)
+worst10 = abs_err >= np.quantile(abs_err, 0.9)
+lim_r = float(np.quantile(abs_err, 0.98))
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 5.8), gridspec_kw={"width_ratios": [1.35, 1]})
+ax = axes[0]
+order_e = np.argsort(abs_err)
+sc = ax.scatter(lon_t[order_e], lat_t[order_e], c=resid[order_e], cmap="RdBu_r",
+                norm=TwoSlopeNorm(vmin=-lim_r, vcenter=0.0, vmax=lim_r), s=6, linewidths=0)
+fig.colorbar(sc, ax=ax, fraction=0.045, pad=0.02, label="residual, predicted - true (\\$100k)")
+geo_axes(ax)
+ax.set_title("Test residuals (red = over-predicted, blue = under-predicted)")
+ax = axes[1]
+ax.hist(np.clip(resid, -3, 3), bins=90, color=PACIFIC, alpha=0.88)
+ax.axvline(0, color=INK, lw=1)
+ax.set_xlabel("Residual (\\$100k, clipped to ±3)")
+ax.set_ylabel("Block groups")
+ax.set_title("Distribution of test residuals")
+ax.text(0.03, 0.95, f"within {usd_plot(50_000)}: {np.mean(abs_err <= 0.5):.0%}\n"
+                    f"within {usd_plot(100_000)}: {np.mean(abs_err <= 1.0):.0%}\n"
+                    f"skewness: {stats.skew(resid):.2f}", transform=ax.transAxes, va="top", fontsize=9)
+headline(fig, "Where the model misses",
+         f"{near_t[worst10].mean():.0%} of the worst 10% of errors lie within 80 km of San Francisco or Los Angeles, "
+         f"against {near_t.mean():.0%} of all test block groups")
+plt.show()
+
+# %%
+z_abs = np.abs(X_test_s)
+top_err = np.argsort(-abs_err)[:10]
+largest = pd.DataFrame(X_test[top_err], columns=FEATURES)
+largest.insert(0, "row id", idx_test[top_err])
+largest["true"] = y_test[top_err]
+largest["predicted"] = y_pred_test[top_err]
+largest["residual"] = resid[top_err]
+largest["most extreme input"] = [f"{FEATURES[int(z_abs[i].argmax())]} (|z| = {z_abs[i].max():.1f})" for i in top_err]
+print("The ten largest test errors:")
+display(largest.round(3))
+print(f"{np.mean([z_abs[i].max() > 5 for i in top_err]):.0%} of these ten involve an input more than "
+      f"5 standard deviations from the training mean; {np.mean(cap_test[top_err]):.0%} are capped block groups.")
+
+# %%
+def permutation_importance_mse(model, X, y, n_repeats=10, seed=SEED):
+    rng = np.random.default_rng(seed)
+    base = float(np.mean((predict(model, X) - y) ** 2))
+    deltas = np.zeros((X.shape[1], n_repeats))
+    for j in range(X.shape[1]):
+        for r in range(n_repeats):
+            X_perm = X.copy()
+            X_perm[:, j] = rng.permutation(X_perm[:, j])
+            deltas[j, r] = float(np.mean((predict(model, X_perm) - y) ** 2)) - base
+    return base, deltas
+
+
+base_mse, perm = permutation_importance_mse(final_model, X_test_s, y_test)
+imp = pd.DataFrame({"mean rise in test MSE": perm.mean(axis=1), "SD over 10 shuffles": perm.std(axis=1, ddof=1)},
+                   index=FEATURES).sort_values("mean rise in test MSE")
+imp["rise as % of test MSE"] = 100 * imp["mean rise in test MSE"] / base_mse
+
+fig, ax = plt.subplots(figsize=(12.5, 4.3))
+ax.barh(imp.index, imp["mean rise in test MSE"], xerr=imp["SD over 10 shuffles"], height=0.6, capsize=3,
+        color=[HIGHWAY if f in ("Latitude", "Longitude") else PACIFIC for f in imp.index], error_kw=dict(ecolor=INK, lw=1))
+span = imp["mean rise in test MSE"].abs().max()
+for i, (v, pct) in enumerate(zip(imp["mean rise in test MSE"], imp["rise as % of test MSE"])):
+    ax.text(max(v, 0) + span * 0.03, i, f"{v:+.3f} ({pct:.0f}%)", va="center", fontsize=8.5)
+ax.set_xlim(min(0, imp["mean rise in test MSE"].min()) - span * 0.05, span * 1.3)
+ax.set_xlabel(f"Rise in test MSE when the feature is shuffled (unshuffled test MSE {base_mse:.3f})")
+top2 = list(imp.index[::-1][:2])
+headline(fig, "Permutation importance: what the final model relies on",
+         f"Shuffling {top2[0]} raises the test MSE by {imp.loc[top2[0], 'rise as % of test MSE']:.0f}% and {top2[1]} by "
+         f"{imp.loc[top2[1], 'rise as % of test MSE']:.0f}%; green bars are the two coordinates")
+plt.show()
+display(imp.iloc[::-1].round(4))
+
+# %%
+pd_features = [f for f in imp.index[::-1] if f not in ("Latitude", "Longitude")][:3]
+rows_pd = np.random.default_rng(SEED).choice(len(X_test), size=min(400, len(X_test)), replace=False)
+base_raw = X_test[rows_pd].astype(np.float64)
+
+fig, axes = plt.subplots(1, len(pd_features), figsize=(14, 4.3), sharey=True)
+axes = np.atleast_1d(axes)
+for ax, f in zip(axes, pd_features):
+    j = FEATURES.index(f)
+    grid = np.linspace(np.quantile(X_train[:, j], 0.01), np.quantile(X_train[:, j], 0.99), 40)
+    stacked = np.repeat(base_raw[None, :, :], len(grid), axis=0)        # (grid point, block group, feature)
+    stacked[:, :, j] = grid[:, None]
+    preds = predict(final_model, scaler.transform(stacked.reshape(-1, len(FEATURES))).astype(np.float32))
+    preds = preds.reshape(len(grid), -1)
+    for r in range(min(60, preds.shape[1])):
+        ax.plot(grid, preds[:, r], color=PACIFIC, alpha=0.09, lw=0.8)
+    ax.plot(grid, preds.mean(axis=1), color=POPPY, lw=2.6, label="average (partial dependence)")
+    ax.set_xlabel(f"{f} ({FEATURE_INFO[f][1]})".replace("$", "\\$"))
+    ax.set_title(f)
+axes[0].set_ylabel("Predicted value (\\$100k)")
+axes[0].legend(loc="upper left")
+headline(fig, "Partial dependence for the three most important non-location features",
+         "Orange: average prediction as one feature varies while the others keep their real values; "
+         "blue: 60 individual block groups")
+plt.show()
+
+# %%
+lat_g, lon_g = np.linspace(32.4, 42.1, 160), np.linspace(-124.5, -114.1, 160)
+LON, LAT = np.meshgrid(lon_g, lat_g)
+i_lat, i_lon = FEATURES.index("Latitude"), FEATURES.index("Longitude")
+typical = np.median(X_train, axis=0).astype(np.float64)
+grid_X = np.tile(typical, (LON.size, 1))
+grid_X[:, i_lat], grid_X[:, i_lon] = LAT.ravel(), LON.ravel()
+surface = predict(final_model, scaler.transform(grid_X).astype(np.float32)).reshape(LAT.shape)
+dist, _ = cKDTree(np.c_[X_train[:, i_lon], X_train[:, i_lat]]).query(np.c_[LON.ravel(), LAT.ravel()])
+surface_masked = np.ma.masked_where(dist.reshape(LAT.shape) > 0.12, surface)
+
+
+def surface_at(lat0, lon0):
+    return float(surface[np.abs(lat_g - lat0).argmin(), np.abs(lon_g - lon0).argmin()])
+
+
+sf_v, la_v, fr_v = (surface_at(*CITIES[c]) for c in ("San Francisco", "Los Angeles", "Fresno"))
+fig, ax = plt.subplots(figsize=(10, 8.8))
+mesh = ax.pcolormesh(LON, LAT, surface_masked, cmap="viridis", shading="auto")
+fig.colorbar(mesh, ax=ax, fraction=0.04, pad=0.02, label="predicted value of a typical block group (\\$100k)")
+geo_axes(ax)
+ax.set_xlim(-124.6, -114.0)
+ax.set_ylim(32.3, 42.2)
+headline(fig, "What the network learned about location",
+         f"One typical block group (training medians) is priced at {usd_plot(sf_v * DOLLARS)} in San Francisco, "
+         f"{usd_plot(la_v * DOLLARS)} in Los Angeles and {usd_plot(fr_v * DOLLARS)} in Fresno")
+plt.show()
+
+# %% [markdown]
+### 6b.1 What the diagnostics show
+
+The diagnostics show that the errors are structured rather than random, and most of the structure points to two causes: price level and location.
+
+**Price level.** The residual plot bends: cheap block groups are over-predicted and expensive ones under-predicted, the familiar pull towards the middle of a model trained on squared error. In the cheapest tenth of the test set the model over-predicts by \$14,040 on average. In the most expensive tenth it under-predicts by \$72,993, and the MAE there is \$78,753, four times the \$19,729 of the cheapest tenth. Part of the top-decile error comes from the ceiling. Half of the ten largest errors are capped block groups, and eight of the ten are under-predictions of expensive places. The residuals also have a long left tail (skewness −1.0).
+
+**Location.** The worst 10% of errors are over-represented near San Francisco and Los Angeles: 69% of them lie within 80 km of either city, against 60% of all test block groups. The largest misses are expensive pockets such as the Santa Barbara coast, southern Marin County and the Westside of Los Angeles, which the network prices closer to their region's average than to their true value. Extreme inputs, which Step 1 flagged as a risk, turned out to matter little: only one of the ten largest errors involves an input more than 5 standard deviations from the training mean.
+
+**What the model relies on.** Shuffling Latitude raised the test MSE by 950% and Longitude by 843%, far ahead of AveRooms (324%), AveBedrms (306%) and MedInc (256%). Two cautions apply (Fisher et al., 2019). First, the coordinates and the two room counts come in correlated pairs, so shuffling one member creates impossible combinations, such as a point in the ocean or more bedrooms than rooms, and that inflates both scores. Second, importance measures reliance, not causation, and income's lower rank does not mean income matters little. Its partial-dependence curve rises steadily, from roughly \$135,000 at a median household income of \$15,000 to roughly \$345,000 at \$100,000, flattening at the top (Friedman, 2001). The learned location surface shows the coastal premium directly. The same typical block group is priced at \$228,734 in San Francisco and \$219,043 in Los Angeles but only \$79,062 in Fresno, a factor of almost three for location alone.
+
+# %% [markdown]
+<a id="ext-c"></a>
+
+## 6c. Extension: stronger testing of the final model
+
+A single test score is one draw from a noisy process. It depends on which 3,096 block groups happened to land in the test set, and a random split hides how the model would cope with places it has never seen. This section adds six tests. None of them changes the final model, and those that use the test set work only with the predictions already made in Step 6.
+
+| Test | Question it answers | Data used |
+|---|---|---|
+| Bootstrap confidence intervals | How much would the test MAE, RMSE and R² move with a different, equally plausible test sample? | test predictions from Step 6 |
+| Paired bootstrap comparisons | Does the final model really beat, or lose to, each alternative on these block groups? | test predictions from Step 6 |
+| Random 5-fold cross-validation | Was the single 70/15/15 split lucky or unlucky? | training and validation rows only |
+| Spatial block cross-validation | How well does the network price regions it has never seen? | training and validation rows only |
+| Slice tests | Where, and for which kinds of block group, is the model weakest? | test predictions from Step 6 |
+| Conformal prediction intervals | How wide must an interval be to contain the true value with a chosen probability, and does that promise hold? | validation residuals, checked on the test predictions |
+
+**Bootstrap.** Resampling the test rows with replacement 2,000 times approximates the sampling distribution of each metric, and the 2.5th and 97.5th percentiles give a 95% interval (Efron & Tibshirani, 1993). Every model is scored on the same resamples, so the difference between two models gets its own paired interval. If that interval excludes zero, the gap is unlikely to be an accident of this particular test sample.
+
+**Cross-validation.** The final configuration (the size and activation chosen in Steps 4 and 5, the reference compile settings and the number of epochs fixed in Step 6) is retrained once per fold on the development rows, meaning the training and validation sets combined (Kohavi, 1995). Each fold refits the scaler on its own training rows, so no fold sees statistics from the rows it is tested on. Random folds mix neighbouring block groups across the train/test boundary. Spatial folds first group the block groups into 25 compact regions with k-means on their coordinates (Lloyd, 1982) and then hold out whole regions, so every held-out fold lies in territory the model has not seen. The gap between the two estimates measures how optimistic a random split is when the data are spatially autocorrelated (Roberts et al., 2017).
+
+### 6c.1 Bootstrap intervals and paired comparisons
+
+# %%
+N_BOOT = 300 if QUICK_MODE else 2000
+test_preds = {
+    "Final model": y_pred_test,
+    "Tuned champion": y_pred_champ,
+    "Linear regression": ref_fitted["Linear regression"].predict(X_test_s),
+    "Gradient-boosted trees": ref_fitted["Gradient-boosted trees (HistGradientBoosting)"].predict(X_test_s),
+}
+
+
+def bootstrap_metrics(y, preds, n_boot=N_BOOT, seed=SEED, chunk=250):
+    """Percentile bootstrap over test rows; every model is scored on the same resamples (paired)."""
+    rng = np.random.default_rng(seed)
+    draws = {name: {"MAE": [], "RMSE": [], "R2": []} for name in preds}
+    done = 0
+    while done < n_boot:
+        b = min(chunk, n_boot - done)
+        idx = rng.integers(0, len(y), size=(b, len(y)))
+        yb = y[idx]
+        sst = ((yb - yb.mean(axis=1, keepdims=True)) ** 2).sum(axis=1)
+        for name, p in preds.items():
+            eb = np.asarray(p)[idx] - yb
+            draws[name]["MAE"].append(np.abs(eb).mean(axis=1))
+            draws[name]["RMSE"].append(np.sqrt((eb ** 2).mean(axis=1)))
+            draws[name]["R2"].append(1 - (eb ** 2).sum(axis=1) / sst)
+        done += b
+    return {name: {k: np.concatenate(v) for k, v in d.items()} for name, d in draws.items()}
+
+
+boot = bootstrap_metrics(y_test, test_preds)
+point = {name: {"MAE": mean_absolute_error(y_test, p), "RMSE": float(np.sqrt(mean_squared_error(y_test, p))),
+                "R2": r2_score(y_test, p)} for name, p in test_preds.items()}
+boot_rows = []
+for name in test_preds:
+    row = {"model": name}
+    for metric in ("MAE", "RMSE", "R2"):
+        lo, hi = np.percentile(boot[name][metric], [2.5, 97.5])
+        row[metric], row[f"{metric} low"], row[f"{metric} high"] = point[name][metric], lo, hi
+    boot_rows.append(row)
+boot_summary = pd.DataFrame(boot_rows).set_index("model")
+display(pd.DataFrame({
+    "MAE (95% CI)": [f"${r['MAE'] * DOLLARS:,.0f} (${r['MAE low'] * DOLLARS:,.0f} to ${r['MAE high'] * DOLLARS:,.0f})"
+                     for _, r in boot_summary.iterrows()],
+    "RMSE (95% CI)": [f"${r['RMSE'] * DOLLARS:,.0f} (${r['RMSE low'] * DOLLARS:,.0f} to ${r['RMSE high'] * DOLLARS:,.0f})"
+                      for _, r in boot_summary.iterrows()],
+    "R squared (95% CI)": [f"{r['R2']:.3f} ({r['R2 low']:.3f} to {r['R2 high']:.3f})" for _, r in boot_summary.iterrows()],
+}, index=boot_summary.index))
+
+paired_rows = []
+for name in test_preds:
+    if name == "Final model":
+        continue
+    d = boot["Final model"]["MAE"] - boot[name]["MAE"]
+    lo, hi = np.percentile(d, [2.5, 97.5])
+    share = float(np.mean(d > 0))
+    paired_rows.append({"comparison": f"Final model vs {name}",
+                        "MAE difference ($)": (point["Final model"]["MAE"] - point[name]["MAE"]) * DOLLARS,
+                        "95% CI low ($)": lo * DOLLARS, "95% CI high ($)": hi * DOLLARS,
+                        "two-sided bootstrap p": max(2 * min(share, 1 - share), 1 / N_BOOT),
+                        "verdict": "final model better" if hi < 0 else ("final model worse" if lo > 0 else "no clear difference")})
+paired_table = pd.DataFrame(paired_rows).set_index("comparison")
+display(paired_table.round({"MAE difference ($)": 0, "95% CI low ($)": 0, "95% CI high ($)": 0, "two-sided bootstrap p": 4}))
+
+# %%
+fig, axes = plt.subplots(1, 2, figsize=(13.5, 4.3), gridspec_kw={"width_ratios": [1, 1.1]})
+ax = axes[0]
+order_m = boot_summary.sort_values("MAE").index.tolist()
+for i, name in enumerate(order_m):
+    r = boot_summary.loc[name]
+    color = HIGHWAY if name == "Final model" else (POPPY if name == "Tuned champion" else SUBTLE)
+    ax.plot([r["MAE low"] * DOLLARS, r["MAE high"] * DOLLARS], [i, i], color=color, lw=4, solid_capstyle="round")
+    ax.plot(r["MAE"] * DOLLARS, i, "o", color=color, ms=9, markeredgecolor="white")
+    ax.text(r["MAE high"] * DOLLARS, i, "  " + usd_plot(r["MAE"] * DOLLARS), fontsize=8.5, va="center")
+ax.set_yticks(range(len(order_m)), order_m)
+ax.invert_yaxis()
+ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: usd_plot(v / 1000) + "k"))
+ax.margins(x=0.25)
+ax.set_xlabel("Test MAE with its 95% bootstrap interval")
+ax.set_title("How precise is each test MAE?")
+ax = axes[1]
+names_p = paired_table.index.tolist()
+for i, name in enumerate(names_p):
+    r = paired_table.loc[name]
+    color = {"final model better": HIGHWAY, "final model worse": REDWOOD}.get(r["verdict"], SUBTLE)
+    ax.plot([r["95% CI low ($)"], r["95% CI high ($)"]], [i, i], color=color, lw=4, solid_capstyle="round")
+    ax.plot(r["MAE difference ($)"], i, "o", color=color, ms=9, markeredgecolor="white")
+    ax.text(max(r["95% CI high ($)"], 0), i, "  " + r["verdict"], fontsize=8.5, va="center", color=color)
+ax.axvline(0, color=INK, lw=1, ls="--")
+ax.set_yticks(range(len(names_p)), [n.replace("Final model vs ", "vs ") for n in names_p])
+ax.invert_yaxis()
+ax.margins(x=0.35)
+ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: usd_plot(v)))
+ax.set_xlabel("Final model MAE minus the other model's MAE (negative = final model better)")
+ax.set_title("Paired differences on the same block groups")
+fb = boot_summary.loc["Final model"]
+headline(fig, "Bootstrap testing: the test score with error bars",
+         f"{N_BOOT:,} paired resamples of the {len(y_test):,} test block groups; final model MAE "
+         f"{usd_plot(fb['MAE'] * DOLLARS)} (95% interval {usd_plot(fb['MAE low'] * DOLLARS)} to "
+         f"{usd_plot(fb['MAE high'] * DOLLARS)})")
+plt.show()
+
+# %% [markdown]
+### 6c.2 Random versus spatial cross-validation (development rows only)
+
+# %%
+from sklearn.model_selection import GroupKFold, KFold
+
+CV_FOLDS = 3 if QUICK_MODE else 5
+CV_EPOCHS = int(FINAL_RES["best_epoch"])
+N_REGIONS = 25
+idx_dev = np.concatenate([idx_train, idx_val])
+X_dev, y_dev = X_all[idx_dev], y_all[idx_dev]
+lat_dev, lon_dev = X_dev[:, FEATURES.index("Latitude")], X_dev[:, FEATURES.index("Longitude")]
+coords_km = np.c_[lat_dev * 111.0, lon_dev * 111.0 * np.cos(np.deg2rad(37))]
+
+
+def kmeans_regions(X, k, n_init=10, max_iter=300, seed=SEED):
+    """Lloyd's k-means (Lloyd, 1982) with k-means++ seeding, in plain NumPy.
+    Used instead of sklearn's KMeans, which fails on some Windows installs because of a
+    threadpoolctl/OpenBLAS incompatibility."""
+    rng = np.random.default_rng(seed)
+    X = np.asarray(X, dtype=float)
+    best_labels, best_inertia = None, np.inf
+    for _ in range(n_init):
+        centers = X[[rng.integers(len(X))]]
+        for _ in range(1, k):                       # k-means++: distant points are likelier seeds
+            d2 = ((X[:, None, :] - centers[None]) ** 2).sum(-1).min(axis=1)
+            centers = np.vstack([centers, X[rng.choice(len(X), p=d2 / d2.sum())]])
+        for _ in range(max_iter):
+            labels = ((X[:, None, :] - centers[None]) ** 2).sum(-1).argmin(axis=1)
+            new = np.array([X[labels == j].mean(axis=0) if np.any(labels == j) else centers[j]
+                            for j in range(k)])
+            converged = np.allclose(new, centers)
+            centers = new
+            if converged:
+                break
+        labels = ((X[:, None, :] - centers[None]) ** 2).sum(-1).argmin(axis=1)
+        inertia = float(((X - centers[labels]) ** 2).sum())
+        if inertia < best_inertia:
+            best_labels, best_inertia = labels, inertia
+    return best_labels
+
+
+region = kmeans_regions(coords_km, N_REGIONS)
+
+
+def cv_fold(scheme, k, tr, te):
+    """Retrain the final configuration on one fold; the scaler is refitted on the fold's own training rows."""
+    key = run_key({"scheme": scheme, "fold": k, "units": CHOSEN_UNITS, "act": CHOSEN_ACT, "epochs": CV_EPOCHS,
+                   "seed": SEED, "n": int(len(tr)), "head": [int(i) for i in tr[:5]]})
+    path = RUN_DIR / f"cv_{scheme}{k}_{key}.json"
+    if USE_CACHE and path.exists():
+        return {**json.loads(path.read_text()), "cached": True}
+    fold_scaler = StandardScaler().fit(X_dev[tr])
+    set_global_determinism(SEED)
+    model = build_shallow_net(CHOSEN_UNITS, CHOSEN_ACT, X_dev.shape[1], name=f"cv_{scheme}{k}")
+    model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+    t0 = time.perf_counter()
+    model.fit(fold_scaler.transform(X_dev[tr]).astype(np.float32), y_dev[tr], epochs=CV_EPOCHS,
+              batch_size=BATCH_SIZE, shuffle=True, verbose=0)
+    p = predict(model, fold_scaler.transform(X_dev[te]).astype(np.float32))
+    res = {"scheme": scheme, "fold": k, "n_train": int(len(tr)), "n_test": int(len(te)),
+           "MSE": float(np.mean((p - y_dev[te]) ** 2)), "MAE": float(np.mean(np.abs(p - y_dev[te]))),
+           "R2": float(r2_score(y_dev[te], p)), "seconds": time.perf_counter() - t0}
+    path.write_text(json.dumps(res))
+    return {**res, "cached": False}
+
+
+cv_rows, spatial_fold = [], np.full(len(idx_dev), -1)
+for k, (tr, te) in enumerate(KFold(n_splits=CV_FOLDS, shuffle=True, random_state=SEED).split(X_dev)):
+    cv_rows.append(cv_fold("random", k, tr, te))
+for k, (tr, te) in enumerate(GroupKFold(n_splits=CV_FOLDS).split(X_dev, y_dev, groups=region)):
+    cv_rows.append(cv_fold("spatial", k, tr, te))
+    spatial_fold[te] = k
+for r in cv_rows:
+    timing = "from cache" if r["cached"] else f"{r['seconds']:.0f} s"
+    print(f"{r['scheme']:<8} fold {r['fold'] + 1}: MAE ${r['MAE'] * DOLLARS:>8,.0f} on {r['n_test']:>5,} held-out rows | {timing}")
+cv_df = pd.DataFrame(cv_rows).drop(columns=["cached"])
+cv_summary = cv_df.groupby("scheme")[["MAE", "MSE", "R2"]].agg(["mean", "std"])
+display(cv_summary.round(4))
+cv_mean = cv_df.groupby("scheme")["MAE"].mean()
+optimism = float(100 * (cv_mean["spatial"] / cv_mean["random"] - 1))
+print(f"Spatial cross-validation MAE differs from random cross-validation MAE by {optimism:+.1f}%")
+
+# %%
+fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.6), gridspec_kw={"width_ratios": [1, 1.25]})
+ax = axes[0]
+for i, scheme in enumerate(["random", "spatial"]):
+    vals = cv_df.loc[cv_df["scheme"] == scheme, "MAE"].to_numpy() * DOLLARS
+    ax.scatter(i + np.linspace(-0.12, 0.12, len(vals)), vals, s=75, color=[PACIFIC, POPPY][i], edgecolor="white", zorder=3)
+    ax.hlines(vals.mean(), i - 0.25, i + 0.25, color=INK, lw=2)
+    ax.text(i + 0.28, vals.mean(), "mean " + usd_plot(vals.mean()), va="center", fontsize=9)
+ax.axhline(test_mae * DOLLARS, color=HIGHWAY, ls=":", lw=1.4, label=f"Step 6 test MAE ({usd_plot(test_mae * DOLLARS)})")
+ax.set_xticks([0, 1], ["random folds", "spatial folds\n(unseen regions)"])
+ax.set_xlim(-0.6, 1.9)
+ax.yaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: usd_plot(v / 1000) + "k"))
+ax.set_ylabel("Held-out MAE per fold")
+ax.legend(loc="upper left")
+ax.set_title(f"{CV_FOLDS}-fold cross-validation of the final configuration")
+ax = axes[1]
+fold_cmap = mpl.colormaps["tab10"]
+for k in range(CV_FOLDS):
+    m = spatial_fold == k
+    mae_k = cv_df[(cv_df["scheme"] == "spatial") & (cv_df["fold"] == k)]["MAE"].iloc[0] * DOLLARS
+    ax.scatter(lon_dev[m], lat_dev[m], s=2, color=fold_cmap(k), linewidths=0, label=f"fold {k + 1}: MAE {usd_plot(mae_k)}")
+geo_axes(ax, cities=False)
+ax.legend(loc="upper right", markerscale=6, fontsize=8, frameon=True, framealpha=0.9)
+ax.set_title(f"Spatial folds: {N_REGIONS} k-means regions, held out whole")
+headline(fig, "Random versus spatial cross-validation (the test set is not used)",
+         f"Holding out whole regions changes the cross-validated MAE by {optimism:+.1f}% compared with random folds")
+plt.show()
+
+# %% [markdown]
+### 6c.3 Slice tests on the test predictions
+
+# %%
+def nearest_city(lat_arr, lon_arr):
+    names = list(CITIES)
+    c = np.array([CITIES[n] for n in names])
+    d = (lat_arr[:, None] - c[None, :, 0]) ** 2 + ((lon_arr[:, None] - c[None, :, 1]) * np.cos(np.deg2rad(37))) ** 2
+    return np.array(names)[d.argmin(axis=1)]
+
+
+income_band = pd.qcut(X_test[:, FEATURES.index("MedInc")], 5,
+                      labels=["lowest 20%", "20-40%", "40-60%", "60-80%", "top 20%"])
+SLICES = {
+    "nearest major city": nearest_city(lat_t, lon_t),
+    "income band (MedInc quintile)": np.asarray(income_band.astype(str)),
+    "price ceiling": np.where(cap_test, "at the ceiling", "below the ceiling"),
+    "input extremity": np.where(np.abs(X_test_s).max(axis=1) > 4, "an input beyond 4 SD", "all inputs within 4 SD"),
+}
+
+
+def slice_report(labels, n_boot=1000, seed=SEED):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for lab in pd.unique(labels):
+        m = labels == lab
+        ae = abs_err[m]
+        draws = ae[rng.integers(0, m.sum(), size=(n_boot, m.sum()))].mean(axis=1)
+        lo, hi = np.percentile(draws, [2.5, 97.5])
+        rows.append({"slice": str(lab), "block groups": int(m.sum()), "MAE ($)": ae.mean() * DOLLARS,
+                     "CI low ($)": lo * DOLLARS, "CI high ($)": hi * DOLLARS,
+                     "mean signed error ($)": resid[m].mean() * DOLLARS})
+    return pd.DataFrame(rows).sort_values("MAE ($)", ascending=False).reset_index(drop=True)
+
+
+slice_tables = {name: slice_report(labels) for name, labels in SLICES.items()}
+fig, axes = plt.subplots(2, 2, figsize=(13.5, 8.2))
+for ax, (name, tbl) in zip(axes.ravel(), slice_tables.items()):
+    yy = np.arange(len(tbl))
+    ax.barh(yy, tbl["MAE ($)"], color=PACIFIC, height=0.6, alpha=0.9)
+    ax.errorbar(tbl["MAE ($)"], yy, xerr=[tbl["MAE ($)"] - tbl["CI low ($)"], tbl["CI high ($)"] - tbl["MAE ($)"]],
+                fmt="none", ecolor=INK, capsize=3, lw=1)
+    ax.axvline(test_mae * DOLLARS, color=HIGHWAY, ls=":", lw=1.4)
+    ax.set_yticks(yy, [f"{s} (n = {n:,})" for s, n in zip(tbl["slice"], tbl["block groups"])])
+    ax.invert_yaxis()
+    ax.xaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: usd_plot(v / 1000) + "k"))
+    ax.set_title(name)
+worst_name, worst_tbl = max(slice_tables.items(), key=lambda kv: kv[1]["MAE ($)"].iloc[0])
+headline(fig, "Slice tests: where the final model is weakest",
+         f"Test MAE per slice with 95% bootstrap intervals (dotted line = overall MAE); weakest slice: "
+         f"{worst_tbl['slice'].iloc[0]} ({worst_name}) at {usd_plot(worst_tbl['MAE ($)'].iloc[0])}")
+plt.show()
+
+# %% [markdown]
+### 6c.4 Conformal prediction intervals
+
+A point prediction says nothing about how far off it might be. Split conformal prediction turns the validation residuals into an interval around every new prediction. Without assuming any distribution for the errors, it guarantees that the interval covers the true value with at least the chosen probability on average, provided the calibration and test block groups are exchangeable (Vovk et al., 2005; Lei et al., 2018). For coverage level $1 - \alpha$ the interval is $\hat{y} \pm \hat{q}$, where $\hat{q}$ is the $\lceil (n + 1)(1 - \alpha) \rceil$-th smallest absolute validation residual among the $n$ calibration rows (Angelopoulos & Bates, 2023).
+
+One caveat matters. The validation set also chose the epoch, the width and the activation, so it is not a perfectly untouched calibration set, and the guarantee is approximate rather than exact. The test set is the honest check: if the empirical test coverage sits close to the promised level, the intervals can be trusted in practice. The calibration residuals are exported with each model, so the dashboard and the API attach the same intervals to every prediction.
+
+# %%
+def conformal_halfwidth(scores, level):
+    """Split-conformal half-width: the ceil((n + 1) * level)-th smallest calibration score."""
+    s = np.sort(np.asarray(scores, dtype=float))
+    k = int(np.ceil((len(s) + 1) * level))
+    return float(s[k - 1]) if k <= len(s) else float("inf")
+
+
+cal_scores = {"final": np.abs(y_val - predict(final_model, X_val_s)),
+              "tuned": np.abs(y_val - predict(champion_model, VAL_INPUTS[CHAMP_FEATURES]))}
+CONF_LEVELS = [0.5, 0.6, 0.7, 0.8, 0.9, 0.95]
+conf_rows = []
+for level in CONF_LEVELS:
+    q = conformal_halfwidth(cal_scores["final"], level)
+    covered = abs_err <= q
+    conf_rows.append({"promised coverage": level, "half-width ($)": q * DOLLARS, "test coverage": covered.mean(),
+                      "coverage at the ceiling": covered[cap_test].mean() if cap_test.any() else np.nan,
+                      "coverage below the ceiling": covered[~cap_test].mean()})
+conformal_table = pd.DataFrame(conf_rows)
+display(conformal_table.round({"half-width ($)": 0, "test coverage": 4, "coverage at the ceiling": 4,
+                               "coverage below the ceiling": 4}))
+q90 = conformal_halfwidth(cal_scores["final"], 0.9)
+cover90 = abs_err <= q90
+city_cov = pd.Series(cover90).groupby(SLICES["nearest major city"]).mean().sort_values()
+
+fig, axes = plt.subplots(1, 2, figsize=(13.5, 4.6), gridspec_kw={"width_ratios": [1, 1.3]})
+ax = axes[0]
+ax.plot([0.45, 1], [0.45, 1], color=SUBTLE, ls="--", lw=1, label="perfect calibration")
+ax.plot(conformal_table["promised coverage"], conformal_table["test coverage"], color=HIGHWAY, marker="o", lw=2.2,
+        label="all test block groups")
+ax.plot(conformal_table["promised coverage"], conformal_table["coverage below the ceiling"], color=PACIFIC, marker="s",
+        lw=1.4, label="below the ceiling")
+ax.plot(conformal_table["promised coverage"], conformal_table["coverage at the ceiling"], color=REDWOOD, marker="^",
+        lw=1.4, label="at the ceiling")
+ax.set_xlabel("Promised coverage")
+ax.set_ylabel("Achieved coverage on the test set")
+ax.legend(loc="lower right")
+ax.set_title("Calibration of the intervals")
+ax = axes[1]
+ax.barh(city_cov.index, city_cov.values * 100, color=PACIFIC, height=0.6)
+ax.axvline(90, color=HIGHWAY, ls=":", lw=1.4)
+for i, v in enumerate(city_cov.values):
+    ax.text(v * 100 + 0.4, i, f"{v:.1%}", va="center", fontsize=8.5)
+ax.set_xlim(max(0, min(50, city_cov.min() * 100 - 5)), 102)
+ax.set_xlabel("Coverage of the 90% interval (%)")
+ax.set_title("Coverage of the 90% interval by nearest major city")
+headline(fig, "Conformal intervals: does the promised coverage hold on unseen block groups?",
+         f"90% intervals are ±{usd_plot(q90 * DOLLARS)} wide and covered {cover90.mean():.1%} of the test block groups; "
+         f"at the price ceiling they covered {cover90[cap_test].mean():.1%}")
+plt.show()
+
+# %% [markdown]
+### 6c.5 What the stronger tests show
+
+The stronger tests sharpen the headline number considerably.
+
+**The test score has error bars, and the test set was kind.** The bootstrap puts the test MAE at \$34,929, with a 95% interval of \$33,614 to \$36,319 (Efron & Tibshirani, 1993). Cross-validation suggests that the figure for a random new block group lies near the top of that range or above it. Five random folds of the development rows gave a mean MAE of \$37,280 with a fold-to-fold standard deviation of \$961, and every one of the five folds was worse than the test set. Together with the validation MAE of \$36,312, this says the 3,096 test block groups happened to be a little easier than average. A fair expectation for new block groups from familiar areas is \$35,000 to \$37,000.
+
+**Unseen regions are much harder.** Holding out whole regions raised the cross-validated MAE to \$45,004, 20.7% above random folds. The spread across folds grew from \$961 to \$4,238, and one held-out region reached an R² of only 0.41. This is the clearest evidence in the study that a random split flatters the model: much of its accuracy comes from interpolating between neighbouring block groups it has already seen (Roberts et al., 2017).
+
+**The model rankings are real, not noise.** In paired comparisons on identical resamples, the network beat linear regression by \$17,175 (95% interval \$15,822 to \$18,521) and lost to gradient-boosted trees by \$4,605 (\$3,797 to \$5,415). It also beat the tuned champion in MAE by a small but consistent \$473 (\$19 to \$932), even though the champion has the lower MSE. Tuning on squared error moved the model towards fewer large errors at the cost of slightly larger typical ones.
+
+**The intervals keep their promise overall, but not everywhere.** The 90% conformal interval, ±\$82,868, covered 91.0% of the test block groups, and achieved coverage tracked the promise closely at every level from 50% (51.8% achieved) to 95% (95.2%) (Lei et al., 2018). The guarantee is marginal, though, and it shows (Angelopoulos & Bates, 2023). Coverage was only 56.0% for capped block groups and 85.3% around San Jose, against 96.1% around Sacramento and 97.1% around Fresno. One interval width fits everyone, so it is too narrow where prices and errors are high and too wide where they are low. Intervals whose width adapts to each block group, such as conformalized quantile regression, would address this (Romano et al., 2019).
+
+**Who bears the errors.** MAE rises with income, from \$26,066 in the lowest fifth of block groups to \$44,366 in the highest. It also rises with the metropolitan setting, from \$22,576 around Fresno and \$24,187 around Sacramento to about \$41,000 around San Francisco and San Jose. Part of this is simply price level, since the same percentage error costs more dollars in an expensive market, but the absolute burden of the model's errors falls on the expensive coastal markets. Block groups with an extreme input were not measurably worse: their MAE was \$38,382, but its interval of \$28,087 to \$50,526 overlaps the rest.
+
+# %% [markdown]
+<a id="ext-d"></a>
+
+## 6d. Extension: export for the dashboard and cloud storage
+
+The accompanying Streamlit dashboard presents these results interactively (Snowflake Inc., n.d.; Plotly Technologies Inc., 2015). It does not need TensorFlow: it re-implements the forward pass of the shallow network in NumPy from the exported weights and checks itself against predictions that Keras produced in this notebook. When the notebook runs inside the project repository (from its `notebooks/` folder), the files below go straight into the repository's `artifacts/` folder, ready to commit and deploy. The repository's `scripts/publish_artifacts.py` can also copy them to an S3-compatible bucket, from which the deployed app can load them. To keep the repository small, the larger files are gzip-compressed and the learning curves are rounded to six significant digits, which changes nothing visible. A `manifest.json` records a SHA-256 checksum for every file (National Institute of Standards and Technology, 2015), so the app refuses files that differ from what this notebook produced. Each model file also carries its validation residuals, which calibrate the conformal intervals that the app and the API attach to every prediction (Lei et al., 2018).
+
+# %%
+import gzip
+
+for stale in ("histories.json", "dataset.csv", "test_predictions.csv"):   # uncompressed files from older runs
+    (ART_DIR / stale).unlink(missing_ok=True)
+
+
+def jsonable(o):
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.bool_):
+        return bool(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    return str(o)
+
+
+def records(df):
+    return json.loads(df.reset_index().to_json(orient="records"))
+
+
+def export_model(path, res, model, feature_mode, fitted_scaler, cal_residuals):
+    W1, b1, W2, b2 = [np.asarray(a, dtype=np.float64) for a in res["best_weights"]]
+    check_raw = X_test[:25].astype(np.float64)
+    check_in = fitted_scaler.transform(log1p_heavy(check_raw) if feature_mode == "log" else check_raw).astype(np.float32)
+    np.savez_compressed(path, W1=W1, b1=b1, W2=W2, b2=b2, activation=np.array(res["cfg"]["activation"]),
+             feature_mode=np.array(feature_mode), log_idx=np.array(LOG_IDX), scaler_mean=fitted_scaler.mean_,
+             scaler_scale=fitted_scaler.scale_, feature_names=np.array(FEATURES), check_raw=check_raw,
+             check_pred=predict(model, check_in), best_epoch=np.array(res["best_epoch"]),
+             cal_residuals=np.asarray(cal_residuals, dtype=np.float32))
+
+
+results = {
+    "meta": {"author": "Anush Goel", "generated": time.strftime("%Y-%m-%d %H:%M"),
+             "versions": VERSIONS, "seed": SEED, "batch_size": BATCH_SIZE, "epochs": EPOCHS,
+             "deterministic_ops": DETERMINISTIC_OPS, "quick_mode": QUICK_MODE, "robustness_seeds": ROBUSTNESS_SEEDS,
+             "hpo_trials": len(trial_params), "hpo_confirm_seeds": HPO_CONFIRM_SEEDS, "schema_version": 3},
+    "data": {"n_rows": int(len(X_df)), "features": FEATURES, "feature_info": FEATURE_INFO, "target": TARGET,
+             "split_sizes": {k: int(len(v)) for k, v in SPLITS.items()}, "cap_count": int(at_cap.sum()),
+             "cap_share": float(at_cap.mean()), "summary": json.loads(summary.to_json(orient="index"))},
+    "baseline": {"best_epoch": baseline["best_epoch"], "best_val_loss": baseline["best_val_loss"],
+                 "curve_stats": curve_stats(baseline), "repro_gap": repro_gap},
+    "widths": {"table": records(width_table), "seed_table": records(width_seed_table),
+               "selected": CHOSEN_UNITS, "decision": width_decision.to_dict()},
+    "activations": {"table": records(act_table), "seed_table": records(act_seed_table), "selected": CHOSEN_ACT,
+                    "decision": act_decision.to_dict(), "saturation": records(sat_table), "target_level": target_level},
+    "hpo": {"space": SPACE, "trials": records(trials), "confirm_table": records(confirm_table),
+            "champion_trial": CHAMP_TRIAL, "champion_cfg": champion["cfg"],
+            "champion_best_val": champion["best_val_loss"]},
+    "final": {"units": CHOSEN_UNITS, "activation": CHOSEN_ACT, "best_epoch": FINAL_RES["best_epoch"],
+              "best_val_loss": FINAL_RES["best_val_loss"], "n_params": FINAL_RES["n_params"],
+              "test_mse": test_mse, "test_mae": test_mae, "test_rmse": test_rmse, "test_r2": test_r2,
+              "cap_table": records(cap_table), "pred_above_cap": int((y_pred_test > TARGET_CAP).sum())},
+    "comparison_val": records(val_comparison),
+    "comparison_test": records(test_comparison),
+    "importance": records(imp.iloc[::-1]),
+    "largest_errors": records(largest),
+    "evaluation": {"n_boot": N_BOOT, "bootstrap": records(boot_summary), "paired": records(paired_table),
+                   "cv_folds": CV_FOLDS, "cv_epochs": CV_EPOCHS, "n_regions": N_REGIONS, "cv": records(cv_df),
+                   "cv_optimism_pct": optimism, "conformal": records(conformal_table), "conformal_q90": q90,
+                   "coverage90_by_city": {k: float(v) for k, v in city_cov.items()},
+                   "slices": {name: json.loads(tbl.to_json(orient="records")) for name, tbl in slice_tables.items()}},
+}
+(ART_DIR / "results.json").write_text(json.dumps(results, indent=2, default=jsonable))
+
+histories = {name: {"cfg": r["cfg"], "history": r["history"], "best_epoch": r["best_epoch"],
+                    "best_val_loss": r["best_val_loss"], "monitor": r["monitor"], "n_params": r["n_params"]}
+             for name, r in RUN_LOG.items()}
+def compact_floats(obj, digits=6):
+    """Round floats to six significant digits: the curves look identical and the file shrinks."""
+    if isinstance(obj, float):
+        return float(f"{obj:.{digits}g}")
+    if isinstance(obj, dict):
+        return {k: compact_floats(v, digits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [compact_floats(v, digits) for v in obj]
+    return obj
+
+
+GZIP = {"method": "gzip", "mtime": 0}          # mtime=0 makes the compressed bytes reproducible
+with gzip.GzipFile(ART_DIR / "histories.json.gz", "wb", mtime=0) as fh:
+    fh.write(json.dumps(compact_floats(histories), default=jsonable, separators=(",", ":")).encode("utf-8"))
+
+split_label = np.empty(len(row_ids), dtype=object)
+for name, idx in SPLITS.items():
+    split_label[idx] = name
+dataset = X_df.copy()
+dataset[TARGET] = y_sr
+dataset["split"] = split_label
+fold_full = np.full(len(row_ids), -1)
+fold_full[idx_dev] = spatial_fold
+dataset["spatial_fold"] = fold_full          # -1 = test row, never used in cross-validation
+dataset.to_csv(ART_DIR / "dataset.csv.gz", index_label="row_id", float_format="%.6g", compression=GZIP)
+
+preds_df = pd.DataFrame(X_test, columns=FEATURES)
+preds_df.insert(0, "row_id", idx_test)
+preds_df["y_true"], preds_df["y_pred_final"], preds_df["y_pred_tuned"] = y_test, y_pred_test, y_pred_champ
+preds_df["y_pred_linear"] = test_preds["Linear regression"]
+preds_df["y_pred_hgb"] = test_preds["Gradient-boosted trees"]
+preds_df.to_csv(ART_DIR / "test_predictions.csv.gz", index=False, float_format="%.6g", compression=GZIP)
+
+export_model(ART_DIR / "model_final.npz", FINAL_RES, final_model, "raw", scaler, cal_scores["final"])
+export_model(ART_DIR / "model_tuned.npz", champion, champion_model, CHAMP_FEATURES,
+             scaler_log if CHAMP_FEATURES == "log" else scaler, cal_scores["tuned"])
+
+ARTIFACT_FILES = ["results.json", "histories.json.gz", "dataset.csv.gz", "test_predictions.csv.gz",
+                  "model_final.npz", "model_tuned.npz"]
+manifest = {"schema_version": 3, "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "files": {name: {"sha256": hashlib.sha256((ART_DIR / name).read_bytes()).hexdigest(),
+                             "bytes": (ART_DIR / name).stat().st_size} for name in ARTIFACT_FILES}}
+(ART_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2))
+for name, info in manifest["files"].items():
+    print(f"{name:<26}{info['bytes'] / 1024:>8.0f} KB   sha256 {info['sha256'][:16]}")
+print(f"{'total':<26}{sum(v['bytes'] for v in manifest['files'].values()) / 1024:>8.0f} KB")
+
+# %% [markdown]
+<a id="step7"></a>
+
+## 7. Final analysis and reflection
+
+### Research question 1. How did hidden-layer size and activation function affect training behaviour (convergence, underfitting, overfitting) and validation performance, and how did they shape the choice of the final model?
+
+Hidden-layer size controlled capacity in the expected direction, and within the 100-epoch budget more capacity was always better. Averaged over five seeds, the final training MSE fell from 0.316 at 16 units to 0.292 at 64 and 0.267 at 256, and the best validation MSE fell with it, from 0.331 to 0.315 and 0.292. The 16-unit network underfitted: its curves flattened earliest and at the highest errors. No width overfitted. The generalisation gap grew with width, from 0.018 to 0.025 and 0.031, which is the first sign of the trade-off between fitting and generalising (Goodfellow et al., 2016), but every validation curve was still falling at epoch 100 and every best epoch fell between 96 and 100. The widest network converged most slowly in relative terms, needing 72 epochs to achieve 95% of its improvement against about 33 for the others, and its validation curve was the noisiest, so for wider networks the best-epoch checkpoint did real work.
+
+The activation function mattered even more than width. ReLU reached a mean best validation MSE of 0.292, against 0.328 for tanh and 0.359 for sigmoid, and it reached the common convergence target in 36 epochs, while neither smooth activation reached it at all. Saturation was not the cause, since only about 1% of tanh and sigmoid pre-activations were saturated. The cause was that both functions are nearly linear in the region where standardised inputs and Glorot initialisation place them, and that sigmoid's gradient there is a quarter of tanh's (Glorot & Bengio, 2010; LeCun et al., 2012). The price of ReLU's speed was stability, since its late-training validation curve was the most volatile of the three.
+
+Both choices were made on validation data alone, using five-seed means and the one-standard-error rule, so neither depends on a lucky run (Bouthillier et al., 2021; Hastie et al., 2009). At each step the winner's results across seeds did not overlap the runner-up's, so no plausible re-run would have changed the decision. The final model is therefore 256 ReLU units, with the weights from epoch 96, the epoch with the lowest validation loss.
+
+### Research question 2. What do the final results indicate about the model's ability to generalise to validation and test data, and which technique could improve performance or generalisation, and why?
+
+The final model generalises well within the territory it was trained on, and noticeably less well beyond it. Its validation MAE was \$36,312. On the test set, evaluated once after every decision, its MAE was \$34,929 (95% bootstrap interval \$33,614 to \$36,319) and its R² 0.801, and its 90% conformal interval of ±\$82,868 covered 91.0% of test block groups. The test score is slightly flattering. All five random cross-validation folds were worse (mean \$37,280), so \$35,000 to \$37,000 is a fairer expectation for new block groups in familiar areas. Generalisation to new places is weaker still. Spatial cross-validation raised the MAE to \$45,004, 20.7% above random folds, and the remaining errors concentrate where prices are high: in the coastal metros and, above all, at the \$500,000 ceiling, where the MAE reaches \$83,323 and interval coverage falls to 56%.
+
+The most promising single improvement is to give the network better location features, and the evidence points there from three directions. Latitude and longitude are by far the most important inputs: shuffling either raises the test MSE by more than 800%. The largest errors are expensive coastal pockets that the model blurs into their regional average. And pricing an unseen region costs 20.7% in accuracy. A single hidden layer has to assemble California's price surface from two raw coordinates, so it can represent sharp local differences, such as the narrow coastal premium visible on the learned map, only by spending many units. Supplying distances to the coast and to the main employment centres, or a smooth set of location features such as radial basis functions centred on clusters of block groups, would hand the network that structure directly. It should reduce error most where error is now largest, and the spatial cross-validation in 6c is the honest yardstick for testing it (Roberts et al., 2017).
+
+The evidence on two other candidates is weaker. Regularised training was tested in 5b: L2 weight decay, a log transform of the heavy-tailed inputs and early stopping lowered the MSE but slightly raised the MAE. Training for longer did not help at all, since 300 epochs matched 100. Better location features therefore remain the stronger recommendation.
+
+# %% [markdown]
+<a id="references"></a>
+
+## References
+
+<div class="references">
+
+Abadi, M., Barham, P., Chen, J., Chen, Z., Davis, A., Dean, J., Devin, M., Ghemawat, S., Irving, G., Isard, M., Kudlur, M., Levenberg, J., Monga, R., Moore, S., Murray, D. G., Steiner, B., Tucker, P., Vasudevan, V., Warden, P., . . . Zheng, X. (2016). TensorFlow: A system for large-scale machine learning. In *Proceedings of the 12th USENIX Symposium on Operating Systems Design and Implementation* (pp. 265–283). USENIX Association. https://www.usenix.org/conference/osdi16/technical-sessions/presentation/abadi
+
+Angelopoulos, A. N., & Bates, S. (2023). Conformal prediction: A gentle introduction. *Foundations and Trends in Machine Learning, 16*(4), 494–591. https://doi.org/10.1561/2200000101
+
+Anthropic. (2026). *Claude* (Opus 5.5) [Large language model]. https://claude.ai
+
+Bergstra, J., & Bengio, Y. (2012). Random search for hyper-parameter optimization. *Journal of Machine Learning Research, 13*, 281–305. https://jmlr.org/papers/v13/bergstra12a.html
+
+Bouthillier, X., Delaunay, P., Bronzi, M., Trofimov, A., Nichyporuk, B., Szeto, J., Mohammadi Sepahvand, N., Raff, E., Madan, K., Voleti, V., Ebrahimi Kahou, S., Michalski, V., Arbel, T., Pal, C., Varoquaux, G., & Vincent, P. (2021). Accounting for variance in machine learning benchmarks. *Proceedings of Machine Learning and Systems, 3*, 747–769. https://proceedings.mlsys.org/paper_files/paper/2021/hash/0184b0cd3cfb185989f858a1d9f5c1eb-Abstract.html
+
+Breiman, L. (2001). Random forests. *Machine Learning, 45*(1), 5–32. https://doi.org/10.1023/A:1010933404324
+
+Cawley, G. C., & Talbot, N. L. C. (2010). On over-fitting in model selection and subsequent selection bias in performance evaluation. *Journal of Machine Learning Research, 11*, 2079–2107. https://jmlr.org/papers/v11/cawley10a.html
+
+Chollet, F., & others. (2015). *Keras* [Computer software]. https://keras.io
+
+Clevert, D.-A., Unterthiner, T., & Hochreiter, S. (2016). *Fast and accurate deep network learning by exponential linear units (ELUs)* [Conference paper]. International Conference on Learning Representations, San Juan, Puerto Rico. https://doi.org/10.48550/arXiv.1511.07289
+
+Efron, B., & Tibshirani, R. J. (1993). *An introduction to the bootstrap*. Chapman & Hall/CRC. https://doi.org/10.1201/9780429246593
+
+Fisher, A., Rudin, C., & Dominici, F. (2019). All models are wrong, but many are useful: Learning a variable's importance by studying an entire class of prediction models simultaneously. *Journal of Machine Learning Research, 20*(177), 1–81. https://jmlr.org/papers/v20/18-760.html
+
+Friedman, J. H. (2001). Greedy function approximation: A gradient boosting machine. *The Annals of Statistics, 29*(5), 1189–1232. https://doi.org/10.1214/aos/1013203451
+
+Glorot, X., & Bengio, Y. (2010). Understanding the difficulty of training deep feedforward neural networks. In *Proceedings of the Thirteenth International Conference on Artificial Intelligence and Statistics* (pp. 249–256). PMLR. https://proceedings.mlr.press/v9/glorot10a.html
+
+Glorot, X., Bordes, A., & Bengio, Y. (2011). Deep sparse rectifier neural networks. In *Proceedings of the Fourteenth International Conference on Artificial Intelligence and Statistics* (pp. 315–323). PMLR. https://proceedings.mlr.press/v15/glorot11a.html
+
+Goodfellow, I., Bengio, Y., & Courville, A. (2016). *Deep learning*. MIT Press. https://www.deeplearningbook.org
+
+Grinsztajn, L., Oyallon, E., & Varoquaux, G. (2022). Why do tree-based models still outperform deep learning on typical tabular data? In *Advances in Neural Information Processing Systems 35* (pp. 507–520). Curran Associates. https://proceedings.neurips.cc/paper_files/paper/2022/hash/0378c7692da36807bdec87ab043cdadc-Abstract-Datasets_and_Benchmarks.html
+
+Harris, C. R., Millman, K. J., van der Walt, S. J., Gommers, R., Virtanen, P., Cournapeau, D., Wieser, E., Taylor, J., Berg, S., Smith, N. J., Kern, R., Picus, M., Hoyer, S., van Kerkwijk, M. H., Brett, M., Haldane, A., Fernández del Río, J., Wiebe, M., Peterson, P., . . . Oliphant, T. E. (2020). Array programming with NumPy. *Nature, 585*(7825), 357–362. https://doi.org/10.1038/s41586-020-2649-2
+
+Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The elements of statistical learning: Data mining, inference, and prediction* (2nd ed.). Springer. https://doi.org/10.1007/978-0-387-84858-7
+
+Hendrycks, D., & Gimpel, K. (2016). *Gaussian error linear units (GELUs)* (arXiv:1606.08415). arXiv. https://doi.org/10.48550/arXiv.1606.08415
+
+Hornik, K., Stinchcombe, M., & White, H. (1989). Multilayer feedforward networks are universal approximators. *Neural Networks, 2*(5), 359–366. https://doi.org/10.1016/0893-6080(89)90020-8
+
+Hunter, J. D. (2007). Matplotlib: A 2D graphics environment. *Computing in Science & Engineering, 9*(3), 90–95. https://doi.org/10.1109/MCSE.2007.55
+
+Kaufman, S., Rosset, S., Perlich, C., & Stitelman, O. (2012). Leakage in data mining: Formulation, detection, and avoidance. *ACM Transactions on Knowledge Discovery from Data, 6*(4), Article 15. https://doi.org/10.1145/2382577.2382579
+
+Ke, G., Meng, Q., Finley, T., Wang, T., Chen, W., Ma, W., Ye, Q., & Liu, T.-Y. (2017). LightGBM: A highly efficient gradient boosting decision tree. In *Advances in Neural Information Processing Systems 30* (pp. 3146–3154). Curran Associates.
+
+Keskar, N. S., Mudigere, D., Nocedal, J., Smelyanskiy, M., & Tang, P. T. P. (2017). *On large-batch training for deep learning: Generalization gap and sharp minima* [Conference paper]. International Conference on Learning Representations, Toulon, France. https://doi.org/10.48550/arXiv.1609.04836
+
+Kingma, D. P., & Ba, J. (2014). *Adam: A method for stochastic optimization* (arXiv:1412.6980). arXiv. https://doi.org/10.48550/arXiv.1412.6980
+
+Kohavi, R. (1995). A study of cross-validation and bootstrap for accuracy estimation and model selection. In *Proceedings of the 14th International Joint Conference on Artificial Intelligence* (Vol. 2, pp. 1137–1143). Morgan Kaufmann.
+
+Krogh, A., & Hertz, J. A. (1992). A simple weight decay can improve generalization. In J. E. Moody, S. J. Hanson, & R. P. Lippmann (Eds.), *Advances in Neural Information Processing Systems 4* (pp. 950–957). Morgan Kaufmann.
+
+LeCun, Y. A., Bottou, L., Orr, G. B., & Müller, K.-R. (2012). Efficient BackProp. In G. Montavon, G. B. Orr, & K.-R. Müller (Eds.), *Neural networks: Tricks of the trade* (2nd ed., pp. 9–48). Springer. https://doi.org/10.1007/978-3-642-35289-8_3
+
+Lei, J., G'Sell, M., Rinaldo, A., Tibshirani, R. J., & Wasserman, L. (2018). Distribution-free predictive inference for regression. *Journal of the American Statistical Association, 113*(523), 1094–1111. https://doi.org/10.1080/01621459.2017.1307116
+
+Lloyd, S. (1982). Least squares quantization in PCM. *IEEE Transactions on Information Theory, 28*(2), 129–137. https://doi.org/10.1109/TIT.1982.1056489
+
+McKinney, W. (2010). Data structures for statistical computing in Python. In S. van der Walt & J. Millman (Eds.), *Proceedings of the 9th Python in Science Conference* (pp. 56–61). https://doi.org/10.25080/Majora-92bf1922-00a
+
+Nair, V., & Hinton, G. E. (2010). Rectified linear units improve restricted Boltzmann machines. In *Proceedings of the 27th International Conference on Machine Learning* (pp. 807–814). Omnipress.
+
+National Institute of Standards and Technology. (2015). *Secure hash standard (SHS)* (FIPS PUB 180-4). U.S. Department of Commerce. https://doi.org/10.6028/NIST.FIPS.180-4
+
+Pace, R. K., & Barry, R. (1997). Sparse spatial autoregressions. *Statistics & Probability Letters, 33*(3), 291–297. https://doi.org/10.1016/S0167-7152(96)00140-X
+
+Pedregosa, F., Varoquaux, G., Gramfort, A., Michel, V., Thirion, B., Grisel, O., Blondel, M., Prettenhofer, P., Weiss, R., Dubourg, V., Vanderplas, J., Passos, A., Cournapeau, D., Brucher, M., Perrot, M., & Duchesnay, É. (2011). Scikit-learn: Machine learning in Python. *Journal of Machine Learning Research, 12*, 2825–2830. https://jmlr.org/papers/v12/pedregosa11a.html
+
+Plotly Technologies Inc. (2015). *Collaborative data science*. https://plot.ly
+
+Prechelt, L. (2012). Early stopping—But when? In G. Montavon, G. B. Orr, & K.-R. Müller (Eds.), *Neural networks: Tricks of the trade* (2nd ed., pp. 53–67). Springer. https://doi.org/10.1007/978-3-642-35289-8_5
+
+Roberts, D. R., Bahn, V., Ciuti, S., Boyce, M. S., Elith, J., Guillera-Arroita, G., Hauenstein, S., Lahoz-Monfort, J. J., Schröder, B., Thuiller, W., Warton, D. I., Wintle, B. A., Hartig, F., & Dormann, C. F. (2017). Cross-validation strategies for data with temporal, spatial, hierarchical, or phylogenetic structure. *Ecography, 40*(8), 913–929. https://doi.org/10.1111/ecog.02881
+
+Robinson, W. S. (1950). Ecological correlations and the behavior of individuals. *American Sociological Review, 15*(3), 351–357. https://doi.org/10.2307/2087176
+
+Romano, Y., Patterson, E., & Candès, E. J. (2019). Conformalized quantile regression. In *Advances in Neural Information Processing Systems 32* (pp. 3543–3553). Curran Associates.
+
+scikit-learn developers. (n.d.). *California Housing dataset*. In *scikit-learn user guide*. Retrieved October 5, 2026, from https://scikit-learn.org/stable/datasets/real_world.html#california-housing-dataset
+
+Snowflake Inc. (n.d.). *Streamlit* [Computer software]. https://streamlit.io
+
+Srivastava, N., Hinton, G., Krizhevsky, A., Sutskever, I., & Salakhutdinov, R. (2014). Dropout: A simple way to prevent neural networks from overfitting. *Journal of Machine Learning Research, 15*(56), 1929–1958. https://jmlr.org/papers/v15/srivastava14a.html
+
+Tobin, J. (1958). Estimation of relationships for limited dependent variables. *Econometrica, 26*(1), 24–36. https://doi.org/10.2307/1907382
+
+Virtanen, P., Gommers, R., Oliphant, T. E., Haberland, M., Reddy, T., Cournapeau, D., Burovski, E., Peterson, P., Weckesser, W., Bright, J., van der Walt, S. J., Brett, M., Wilson, J., Millman, K. J., Mayorov, N., Nelson, A. R. J., Jones, E., Kern, R., Larson, E., . . . SciPy 1.0 Contributors. (2020). SciPy 1.0: Fundamental algorithms for scientific computing in Python. *Nature Methods, 17*(3), 261–272. https://doi.org/10.1038/s41592-019-0686-2
+
+Vovk, V., Gammerman, A., & Shafer, G. (2005). *Algorithmic learning in a random world*. Springer. https://doi.org/10.1007/b106715
+
+</div>
+
+# %% [markdown]
+<a id="appendix"></a>
+
+## Appendix. Acknowledgements, tools and run log
+
+**Data.** The California Housing data as distributed with scikit-learn (Pace & Barry, 1997; Pedregosa et al., 2011).
+
+**Software.** TensorFlow and Keras for the networks (Abadi et al., 2016; Chollet et al., 2015); NumPy, pandas and SciPy for computation (Harris et al., 2020; McKinney, 2010; Virtanen et al., 2020); scikit-learn for splitting, scaling, metrics and the reference models (Pedregosa et al., 2011); Matplotlib for the figures (Hunter, 2007); Streamlit and Plotly for the dashboard (Snowflake Inc., n.d.; Plotly Technologies Inc., 2015). Library calls follow the official documentation.
+
+**AI assistance.** Claude (Anthropic, 2026) was used as an assistant for drafting and reviewing code and text. Every result reported in this notebook comes from code executed in it, and every claim can be traced to an output cell.
+
+# %%
+trained_now = [r for r in RUN_LOG.values() if not r.get("cached")]
+print(f"Training runs in this notebook : {len(RUN_LOG)} ({len(trained_now)} trained in this session, "
+      f"{len(RUN_LOG) - len(trained_now)} reloaded from the cache)")
+print(f"Training time in this session  : {sum(r['seconds'] for r in trained_now) / 60:.1f} minutes")
+print(f"Deterministic kernels          : {DETERMINISTIC_OPS}")
+print(f"Quick mode                     : {QUICK_MODE}")
+for lib, ver in VERSIONS.items():
+    print(f"{lib:<31}: {ver}")

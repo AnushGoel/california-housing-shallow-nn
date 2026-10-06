@@ -1,0 +1,832 @@
+# %% [markdown]
+# Building and Evaluating a Shallow Neural Network for California Housing Prices
+
+**A controlled study of capacity, activation and generalisation in one-hidden-layer networks**  
+**Author:** Anush Goel  
+**Date:** October 2026
+
+<a id="summary"></a>
+
+## Summary of findings
+
+A one-hidden-layer network with 256 ReLU units prices an unseen California block group with a typical error of \$34,929 (test MAE; 95% bootstrap interval \$33,614 to \$36,319) and explains 80% of the variance in median house values (R² = 0.801). Width and activation were each varied with everything else held fixed and five seeds per configuration. Wider networks fitted better without overfitting inside the 100-epoch budget, and ReLU trained far faster and further than tanh or sigmoid. The stronger tests in 6c qualify the headline in four ways. Cross-validation suggests that \$35,000 to \$37,000 is a fairer expectation than the test score, regions the model has never seen cost 20.7% more error, gradient-boosted trees remain \$4,605 more accurate, and the network under-predicts neighbourhoods at the \$500,000 ceiling by about \$80,000. Its 90% conformal intervals covered 91.0% of the test block groups.
+
+| | Result |
+|---|---|
+| Final model | 256 ReLU units, weights from epoch 96 of 100 |
+| Test MAE | \$34,929 (95% bootstrap interval \$33,614 to \$36,319) |
+| Test RMSE and R² | \$51,277 and 0.801 |
+| 90% conformal interval | ±\$82,868, covering 91.0% of test block groups |
+| Cross-validated MAE, random against spatial folds | \$37,280 against \$45,004 (+20.7%) |
+| Gradient-boosted trees, for context | test MAE \$30,324 |
+
+Every number above comes from the outputs below, produced in one run with deterministic kernels (artifact fingerprint `f0d7955fc3a6`).
+
+# %% [markdown]
+## How this notebook is organised
+
+The notebook follows a seven-step protocol, from exploration to a single final test. Four extensions go further than the core protocol, and each one sits where it belongs in a sound workflow: the hyperparameter search (5b) happens before the test set is touched; the error diagnostics (6b) and the stronger tests (6c) come after the single test evaluation and change nothing about the model; and the export (6d) feeds the Streamlit dashboard that accompanies this notebook. Every extension is labelled, and none of them changes a setting of the core experiments.
+
+| Step | Section | What it does |
+|---|---|---|
+| 0 | [Setup and reproducibility](#setup) | libraries, fixed settings, seeds, helper functions |
+| 1 | [Data loading and exploration](#step1) | shapes, summary statistics, target distribution, scales, data quality |
+| 2 | [Data preprocessing](#step2) | 70/15/15 split, standardisation fitted on training rows only, leakage audit |
+| 3 | [Baseline model](#step3) | 64 ReLU units, learning curves, diagnosis |
+| 4 | [Hidden-layer size](#step4) | 16, 64 and 256 units, seed robustness, selection |
+| 5 | [Activation function](#step5) | ReLU, tanh and sigmoid; convergence, stability, saturation |
+| 5b | [Extension: hyperparameter search](#ext-a) | random search on validation data only |
+| 6 | [Final evaluation](#step6) | one evaluation on the test set, dollar terms, the price ceiling |
+| 6b | [Extension: error diagnostics](#ext-b) | residuals, error map, feature importance, learned price surface |
+| 6c | [Extension: stronger testing](#ext-c) | bootstrap intervals, paired comparisons, random and spatial cross-validation, slice tests, conformal intervals |
+| 6d | [Extension: export](#ext-d) | files for the Streamlit app, the GitHub repository and cloud storage |
+| 7 | [Final analysis and reflection](#step7) | answers to the two reflection questions |
+| | [References](#references) | APA 7th edition |
+
+# %% [markdown]
+<a id="setup"></a>
+
+## 0. Setup and reproducibility
+
+Everything that can change a result is fixed in one place: the random seed, the batch size, the epoch budget and the split fractions. One seed (42) controls the data split, the weight initialisation and the order of mini-batches, and TensorFlow's deterministic kernels are switched on, so rerunning a configuration reproduces its curve exactly rather than approximately. Step 4 checks this directly.
+
+The batch size is 64 for every model in the notebook, so that batch size never becomes a hidden second variable. Batches this small keep some noise in the gradient estimate, which tends to generalise better than very large batches (Keskar et al., 2017), and the resulting 226 updates per epoch keep a 100-epoch run short on a CPU.
+
+Two switches control the extensions. `QUICK_MODE = True` gives a fast smoke test with fewer seeds and trials; the full run uses `False`. `USE_CACHE = True` stores every finished run in `artifacts/runs/` and reloads it the next time the notebook runs, so editing text or figures does not require retraining. Deleting that folder forces a clean retrain. A complete run from scratch trains about 70 small networks and takes roughly 30 to 60 minutes on a laptop CPU, most of it in the training-heavy extensions (5b and 6c).
+
+# %%
+# Libraries -----------------------------------------------------------------
+import os
+import json
+import time
+import hashlib
+import platform
+import warnings
+from pathlib import Path
+
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")   # hide TensorFlow start-up messages
+
+import numpy as np
+import pandas as pd
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
+from matplotlib.colors import TwoSlopeNorm
+from matplotlib.lines import Line2D
+import scipy
+from scipy import stats
+from scipy.spatial import cKDTree
+
+import sklearn
+from sklearn.datasets import fetch_california_housing
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.dummy import DummyRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+import tensorflow as tf
+keras = tf.keras
+layers = keras.layers
+
+from IPython.display import display, Markdown
+
+warnings.filterwarnings("ignore", category=UserWarning)
+pd.set_option("display.precision", 4)
+pd.set_option("display.width", 140)
+pd.set_option("display.max_columns", 30)
+
+
+def keras_version() -> str:
+    try:
+        import keras as standalone_keras
+        return standalone_keras.__version__
+    except Exception:
+        return getattr(tf.keras, "__version__", "unknown")
+
+
+VERSIONS = {
+    "python": platform.python_version(),
+    "tensorflow": tf.__version__,
+    "keras": keras_version(),
+    "numpy": np.__version__,
+    "pandas": pd.__version__,
+    "scikit-learn": sklearn.__version__,
+    "scipy": scipy.__version__,
+    "matplotlib": mpl.__version__,
+}
+for lib, ver in VERSIONS.items():
+    print(f"{lib:<14}{ver}")
+print(f"{'devices':<14}{[d.device_type for d in tf.config.list_physical_devices()]}")
+
+# %%
+# Fixed settings for every core model ------------------------------------
+SEED = 42              # one seed for the split, weight initialisation and batch shuffling
+BATCH_SIZE = 64        # chosen once and used for every model in this notebook
+EPOCHS = 100           # fixed maximum number of epochs, the same for every core run
+VAL_FRAC, TEST_FRAC = 0.15, 0.15
+TARGET_CAP = 5.0       # target ceiling, in units of $100,000
+DOLLARS = 100_000      # one target unit in dollars
+
+# Extensions (beyond the core protocol) ------------------------------------------------
+ROBUSTNESS_SEEDS = [42, 7, 123, 2024, 31337]   # repeat runs to measure seed-to-seed noise
+HPO_TRIALS = 24                                 # random-search budget (plus one anchor trial)
+HPO_MAX_EPOCHS = 300                            # upper limit; early stopping ends most trials sooner
+HPO_PATIENCE = 20
+HPO_CONFIRM_SEEDS = [42, 7, 123]                # the top three configurations are re-run on these seeds
+QUICK_MODE = False     # True = fast smoke test with fewer seeds and trials; keep False for the full run
+USE_CACHE = True       # reuse finished runs saved in artifacts/runs (delete that folder to retrain)
+
+if QUICK_MODE:
+    ROBUSTNESS_SEEDS, HPO_TRIALS, HPO_CONFIRM_SEEDS = [42, 7], 6, [42, 7]
+
+# Inside the GitHub repository the notebook lives in notebooks/, so results go to the repository-level artifacts/
+ART_DIR = Path("../artifacts") if Path("../app.py").exists() else Path("artifacts")
+RUN_DIR = ART_DIR / "runs"
+RUN_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def set_global_determinism(seed: int) -> None:
+    """Reset Keras state and seed Python, NumPy and TensorFlow so that a run is repeatable."""
+    keras.backend.clear_session()
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    keras.utils.set_random_seed(seed)
+
+
+try:
+    tf.config.experimental.enable_op_determinism()
+    DETERMINISTIC_OPS = True
+except Exception as err:      # very old TensorFlow builds do not offer this switch
+    DETERMINISTIC_OPS = False
+    print("Deterministic kernels are not available:", err)
+
+set_global_determinism(SEED)
+print(f"seed {SEED} | batch size {BATCH_SIZE} | max epochs {EPOCHS} | deterministic kernels {DETERMINISTIC_OPS} "
+      f"| quick mode {QUICK_MODE} | cache {USE_CACHE}")
+
+# %%
+# Plot style: one palette for the whole notebook (and the dashboard) ----------
+INK, SUBTLE, GRID = "#24313D", "#5F6B76", "#E4E9EE"
+PACIFIC, POPPY, HIGHWAY = "#1D4E89", "#E8772E", "#00704A"
+REDWOOD, SAGE, GOLD = "#A23B2A", "#6E9B6B", "#C9961A"
+TRAIN_C, VAL_C = PACIFIC, POPPY
+WIDTH_C = {16: "#8DB8E0", 64: "#3A75B0", 256: "#0E3563"}
+ACT_C = {"relu": HIGHWAY, "tanh": PACIFIC, "sigmoid": POPPY, "elu": SAGE, "gelu": GOLD}
+HALO = [pe.withStroke(linewidth=2.6, foreground="white")]
+CITIES = {"San Francisco": (37.77, -122.42), "San Jose": (37.34, -121.89), "Sacramento": (38.58, -121.49),
+          "Fresno": (36.74, -119.79), "Los Angeles": (34.05, -118.24), "San Diego": (32.72, -117.16)}
+
+plt.rcParams.update({
+    "figure.dpi": 110, "savefig.dpi": 150, "figure.facecolor": "white", "axes.facecolor": "white",
+    "axes.edgecolor": "#8994A0", "axes.linewidth": 0.8, "axes.spines.top": False, "axes.spines.right": False,
+    "axes.grid": True, "grid.color": GRID, "grid.linewidth": 0.8,
+    "axes.titlesize": 11, "axes.titleweight": "bold", "axes.titlelocation": "left", "axes.titlepad": 8,
+    "axes.labelsize": 10, "axes.labelcolor": INK, "text.color": INK,
+    "xtick.color": SUBTLE, "ytick.color": SUBTLE, "xtick.labelsize": 9, "ytick.labelsize": 9,
+    "legend.frameon": False, "legend.fontsize": 8.8, "font.size": 10,
+})
+
+
+def headline(fig, title, subtitle=None):
+    """Left-aligned figure title with a one-line takeaway computed from the data underneath."""
+    h = fig.get_figheight()
+    fig.suptitle(title, x=0.01, y=1 - 0.10 / h, ha="left", va="top", fontsize=13, fontweight="bold", color=INK)
+    if subtitle:
+        fig.text(0.01, 1 - 0.42 / h, subtitle, ha="left", va="top", fontsize=9.5, color=SUBTLE)
+    fig.tight_layout(rect=(0, 0, 1, 1 - (0.78 if subtitle else 0.48) / h))
+
+
+def nice_log_y(ax):
+    """Log-scaled y axis with plain decimal tick labels."""
+    ax.set_yscale("log")
+    ax.yaxis.set_major_locator(mpl.ticker.LogLocator(base=10, subs=(1.0, 1.5, 2.0, 3.0, 5.0, 7.0), numticks=20))
+    ax.yaxis.set_major_formatter(mpl.ticker.FuncFormatter(lambda v, _: f"{v:g}"))
+    ax.yaxis.set_minor_formatter(mpl.ticker.NullFormatter())
+
+
+def usd_plot(value, digits=0):
+    """Dollar label for matplotlib text (the backslash stops '$' being read as maths)."""
+    sign = "-" if value < 0 else ""
+    return f"{sign}\\${abs(value):,.{digits}f}"
+
+
+def geo_axes(ax, cities=True):
+    """Equal-distance aspect for California's latitude, plus city labels."""
+    ax.set_aspect(1 / np.cos(np.deg2rad(37)))
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.grid(False)
+    if cities:
+        for city, (clat, clon) in CITIES.items():
+            ax.plot(clon, clat, marker="o", ms=3.2, color=INK)
+            ax.annotate(city, (clon, clat), xytext=(5, 3), textcoords="offset points",
+                        fontsize=8.3, color=INK, path_effects=HALO)
+
+# %%
+# Training utilities -----------------------------------------------------------
+DATA = {}      # filled in Step 2 (and 5b): name -> (X_train, y_train, X_val, y_val)
+RUN_LOG = {}   # every finished run, used for the dashboard export and the run log
+
+
+def build_shallow_net(hidden_units=64, activation="relu", n_features=8, l2=0.0, dropout=0.0, name=None):
+    """Input -> one hidden Dense layer -> one linear output unit.
+    l2 and dropout stay at 0 for every core model; only extension 5b uses them."""
+    regulariser = keras.regularizers.l2(l2) if l2 > 0 else None
+    stack = [
+        keras.Input(shape=(n_features,)),
+        layers.Dense(hidden_units, activation=activation, kernel_regularizer=regulariser, name="hidden"),
+    ]
+    if dropout > 0:
+        stack.append(layers.Dropout(dropout, name="dropout"))
+    stack.append(layers.Dense(1, activation="linear", name="output"))
+    return keras.Sequential(stack, name=name)
+
+
+def compile_model(model, cfg):
+    if cfg["lr"] is None:
+        # Core models: the reference compile call (Adam with Keras defaults).
+        model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+    else:
+        # Extension 5b only: a tuned learning rate, and pure MSE tracked as a metric because
+        # val_loss would also contain the L2 penalty whenever weight decay is switched on.
+        model.compile(optimizer=keras.optimizers.Adam(learning_rate=cfg["lr"]), loss="mse", metrics=["mae", "mse"])
+    return model
+
+
+class BestEpochTracker(keras.callbacks.Callback):
+    """Keeps a copy of the weights from the epoch with the lowest monitored value.
+    It never stops training, so the full learning curves stay visible."""
+
+    def __init__(self, monitor="val_loss"):
+        super().__init__()
+        self.monitor = monitor
+        self.best_value, self.best_epoch, self.best_weights = np.inf, None, None
+
+    def on_epoch_end(self, epoch, logs=None):
+        value = (logs or {}).get(self.monitor)
+        if value is not None and float(value) < self.best_value:
+            self.best_value, self.best_epoch = float(value), epoch + 1
+            self.best_weights = [w.copy() for w in self.model.get_weights()]
+
+
+def make_cfg(hidden_units, activation, seed=SEED, epochs=EPOCHS, lr=None, l2=0.0, dropout=0.0,
+             patience=None, reduce_lr=False, features="raw"):
+    """Every setting that defines a run; two runs with equal cfg dicts are the same experiment."""
+    return {"hidden_units": int(hidden_units), "activation": str(activation), "seed": int(seed),
+            "epochs": int(epochs), "batch_size": BATCH_SIZE, "lr": lr, "l2": float(l2),
+            "dropout": float(dropout), "patience": patience, "reduce_lr": bool(reduce_lr), "features": features}
+
+
+def run_key(cfg):
+    return hashlib.md5((json.dumps(cfg, sort_keys=True) + "|v1").encode()).hexdigest()[:10]
+
+
+def package_result(name, cfg, history, tracker, seconds, n_params, monitor="val_loss"):
+    hist = {k: [float(v) for v in vals] for k, vals in history.items()}
+    val = np.asarray(hist[monitor])
+    best = int(np.argmin(np.where(np.isfinite(val), val, np.inf)))   # robust to a diverged epoch
+    train_key = "loss" if monitor == "val_loss" else "mse"
+    return {"name": name, "cfg": cfg, "history": hist, "monitor": monitor,
+            "best_epoch": best + 1, "best_val_loss": float(val[best]), "best_val_mae": float(hist["val_mae"][best]),
+            "final_train_loss": float(hist[train_key][-1]), "final_val_loss": float(val[-1]),
+            "epochs_run": int(len(val)), "seconds": float(seconds), "n_params": int(n_params),
+            "best_weights": tracker.best_weights}
+
+
+def print_run(res):
+    timing = "from cache" if res.get("cached") else f"{res['seconds']:.0f} s"
+    print(f"{res['name']:<20} best val MSE {res['best_val_loss']:.4f} at epoch {res['best_epoch']:>3}/{res['epochs_run']:<3}"
+          f" | final train MSE {res['final_train_loss']:.4f} | {timing}")
+
+
+def run_experiment(cfg, name, verbose=True):
+    """Train one configuration, or reload it from the cache, and return a result dictionary."""
+    key = run_key(cfg)
+    meta_path, weight_path = RUN_DIR / f"{name}_{key}.json", RUN_DIR / f"{name}_{key}.npz"
+    if USE_CACHE and meta_path.exists() and weight_path.exists():
+        res = json.loads(meta_path.read_text())
+        with np.load(weight_path) as npz:
+            res["best_weights"] = [npz[f"w{i}"] for i in range(len(npz.files))]
+        res["cached"] = True
+    else:
+        X_tr, y_tr, X_va, y_va = DATA[cfg["features"]]
+        set_global_determinism(cfg["seed"])
+        model = build_shallow_net(cfg["hidden_units"], cfg["activation"], X_tr.shape[1],
+                                  cfg["l2"], cfg["dropout"], name=name)
+        compile_model(model, cfg)
+        monitor = "val_loss" if cfg["lr"] is None else "val_mse"
+        tracker = BestEpochTracker(monitor)
+        callbacks = [tracker]
+        if cfg["patience"]:
+            callbacks.append(keras.callbacks.EarlyStopping(monitor=monitor, mode="min", patience=cfg["patience"],
+                                                           restore_best_weights=True))
+        if cfg["reduce_lr"]:
+            callbacks.append(keras.callbacks.ReduceLROnPlateau(monitor=monitor, mode="min", factor=0.5,
+                                                               patience=8, min_lr=1e-5))
+        t0 = time.perf_counter()
+        hist = model.fit(X_tr, y_tr, validation_data=(X_va, y_va), epochs=cfg["epochs"],
+                         batch_size=cfg["batch_size"], shuffle=True, verbose=0, callbacks=callbacks)
+        if tracker.best_weights is None:            # only if no epoch produced a finite loss
+            tracker.best_weights = model.get_weights()
+        res = package_result(name, cfg, hist.history, tracker, time.perf_counter() - t0, model.count_params(), monitor)
+        meta_path.write_text(json.dumps({k: v for k, v in res.items() if k != "best_weights"}))
+        np.savez(weight_path, **{f"w{i}": w for i, w in enumerate(res["best_weights"])})
+        res["cached"] = False
+    RUN_LOG[name] = res
+    if verbose:
+        print_run(res)
+    return res
+
+
+def restore_model(res):
+    """Rebuild a run's architecture and load the weights from its best validation epoch."""
+    cfg = res["cfg"]
+    n_features = DATA[cfg["features"]][0].shape[1]
+    model = build_shallow_net(cfg["hidden_units"], cfg["activation"], n_features, cfg["l2"], cfg["dropout"],
+                              name=f"{res['name']}_restored")
+    compile_model(model, cfg)
+    model.set_weights(res["best_weights"])
+    return model
+
+
+def predict(model, X):
+    return model.predict(X, batch_size=4096, verbose=0).ravel()
+
+# %%
+# Analysis and plotting utilities ------------------------------------------------
+def history_arrays(res):
+    """Training and validation MSE per epoch (pure MSE, so runs with weight decay compare fairly)."""
+    h = res["history"]
+    train_key = "loss" if res["monitor"] == "val_loss" else "mse"
+    return np.asarray(h[train_key]), np.asarray(h[res["monitor"]])
+
+
+def curve_stats(res, tail=20, window=30):
+    tr, va = history_arrays(res)
+    best = float(va.min())
+    gain = va[0] - best
+    t95 = int(np.argmax(va <= va[0] - 0.95 * gain)) + 1 if gain > 0 else 1
+    k = min(tail, len(va) - 1)
+    diffs = np.diff(va[-window:])
+    return {
+        "final_train_mse": float(tr[-1]), "final_val_mse": float(va[-1]), "best_val_mse": best,
+        "best_epoch": int(np.argmin(va)) + 1,
+        "gap_end": float(va[-1] - tr[-1]), "gap_end_pct": float(100 * (va[-1] - tr[-1]) / tr[-1]),
+        "val_trend_pct": float(100 * (va[-1] - va[-1 - k]) / va[-1 - k]),
+        "train_trend_pct": float(100 * (tr[-1] - tr[-1 - k]) / tr[-1 - k]),
+        "epochs_to_95pct": t95,
+        "val_volatility_x1e3": float(1e3 * diffs.std()) if diffs.size > 1 else float("nan"),
+        "max_val_rise": float(np.max(np.diff(va)[10:])) if len(va) > 12 else float("nan"),
+        "end_above_best_pct": float(100 * (va[-1] / best - 1)),
+    }
+
+
+STAT_LABELS = {
+    "final_train_mse": "final training MSE",
+    "final_val_mse": "final validation MSE",
+    "best_val_mse": "best validation MSE",
+    "best_epoch": "epoch of best validation MSE",
+    "gap_end": "gap at the last epoch (validation - training)",
+    "gap_end_pct": "gap at the last epoch, % of training MSE",
+    "val_trend_pct": "change in validation MSE over the last 20 epochs (%)",
+    "train_trend_pct": "change in training MSE over the last 20 epochs (%)",
+    "epochs_to_95pct": "epochs needed for 95% of the total improvement",
+    "val_volatility_x1e3": "volatility: SD of epoch-to-epoch validation change, last 30 epochs (x 1e-3)",
+    "max_val_rise": "largest single-epoch rise in validation MSE after epoch 10",
+    "end_above_best_pct": "final validation MSE above its best (%)",
+}
+
+
+def stats_frame(results: dict) -> pd.DataFrame:
+    """Readable table of curve_stats for one or more runs (columns = runs)."""
+    table = pd.DataFrame({name: curve_stats(res) for name, res in results.items()})
+    table.index = [STAT_LABELS[i] for i in table.index]
+    return table.apply(lambda col: col.map(lambda v: f"{v:,.0f}" if float(v).is_integer() and abs(v) >= 1 else f"{v:.4f}"))
+
+
+def plot_curves(ax, res, label="", c_train=TRAIN_C, c_val=VAL_C, show_train=True, show_val=True,
+                mark_best=True, shade_gap=True, lw=1.8, alpha=1.0):
+    tr, va = history_arrays(res)
+    ep = np.arange(1, len(va) + 1)
+    sep = " " if label else ""
+    if show_train:
+        ax.plot(ep, tr, color=c_train, lw=lw, alpha=alpha, label=f"{label}{sep}training")
+    if show_val:
+        ax.plot(ep, va, color=c_val, lw=lw, alpha=alpha, label=f"{label}{sep}validation")
+    if shade_gap and show_train and show_val:
+        ax.fill_between(ep, tr, va, where=va >= tr, color=c_val, alpha=0.10, lw=0, interpolate=True)
+    if mark_best and show_val:
+        b = res["best_epoch"]
+        ax.scatter([b], [va[b - 1]], marker="*", s=95, color=INK, zorder=6)
+        ax.annotate(f"best {va[b - 1]:.4f}\nat epoch {b}", (b, va[b - 1]), xytext=(-8, 14), textcoords="offset points",
+                    ha="right", va="bottom", fontsize=8.3, color=INK, path_effects=HALO)
+    ax.set_xlabel("Epoch")
+    return ax
+
+
+def experiment_table(runs: dict, key_name: str) -> pd.DataFrame:
+    rows = []
+    for key, res in runs.items():
+        s = curve_stats(res)
+        rows.append({key_name: key, "Parameters": res["n_params"],
+                     "Final training loss": s["final_train_mse"], "Best validation loss": s["best_val_mse"],
+                     "Epoch of best validation loss": s["best_epoch"], "Final validation loss": s["final_val_mse"],
+                     "Validation MAE at best epoch": res["best_val_mae"], "Gap at last epoch": s["gap_end"],
+                     "Epochs to 95% of improvement": s["epochs_to_95pct"]})
+    return pd.DataFrame(rows).set_index(key_name)
+
+
+def seed_summary(runs_by_key: dict) -> pd.DataFrame:
+    """Mean, spread and standard error of the best validation loss across seeds."""
+    rows = []
+    for key, runs in runs_by_key.items():
+        best = np.array([r["best_val_loss"] for r in runs.values()])
+        n = len(best)
+        sd = best.std(ddof=1) if n > 1 else np.nan
+        rows.append({"config": key, "seeds": n, "mean best val loss": best.mean(), "SD": sd,
+                     "SE": sd / np.sqrt(n) if n > 1 else np.nan, "min": best.min(), "max": best.max(),
+                     "mean best epoch": np.mean([r["best_epoch"] for r in runs.values()]),
+                     "mean final train loss": np.mean([r["final_train_loss"] for r in runs.values()])})
+    return pd.DataFrame(rows).set_index("config")
+
+
+def one_se_choice(summary: pd.DataFrame, order: list):
+    """Simplest option (first in `order`) whose mean is within one standard error of the best mean."""
+    best_key = summary["mean best val loss"].idxmin()
+    se = summary.loc[best_key, "SE"]
+    threshold = summary.loc[best_key, "mean best val loss"] + (se if np.isfinite(se) else 0.0)
+    choice = next(k for k in order if summary.loc[k, "mean best val loss"] <= threshold)
+    return choice, best_key, float(threshold)
+
+
+def scores(y_true, y_pred):
+    return {"MSE": mean_squared_error(y_true, y_pred), "MAE": mean_absolute_error(y_true, y_pred),
+            "R2": r2_score(y_true, y_pred)}
+
+# %% [markdown]
+<a id="step1"></a>
+
+## 1. Data loading and exploration
+
+The California Housing data describe 20,640 census block groups from the 1990 U.S. census. A block group is the smallest area for which the Census Bureau published sample data, and it is typically home to 600 to 3,000 people. Each row gives eight numeric features for one block group, and the target is the median house value in units of \$100,000 (Pace & Barry, 1997; scikit-learn developers, n.d.).
+
+### 1.1 Shapes and feature names
+
+# %%
+housing = fetch_california_housing(as_frame=True)
+X_df = housing.data.copy()
+y_sr = housing.target.copy()
+FEATURES = list(X_df.columns)
+TARGET = y_sr.name or "MedHouseVal"
+
+print(f"Feature matrix X shape: {X_df.shape}   ({X_df.shape[0]:,} block groups x {X_df.shape[1]} features)")
+print(f"Target array   y shape: {y_sr.shape}")
+print(f"Target name           : {TARGET} (median house value, in units of $100,000)")
+print(f"Feature names         : {', '.join(FEATURES)}")
+
+# %%
+FEATURE_INFO = {
+    "MedInc": ("Median household income in the block group", "$10,000s"),
+    "HouseAge": ("Median age of the houses in the block group", "years"),
+    "AveRooms": ("Average number of rooms per household", "rooms"),
+    "AveBedrms": ("Average number of bedrooms per household", "bedrooms"),
+    "Population": ("Number of residents in the block group", "people"),
+    "AveOccup": ("Average number of people per household", "people"),
+    "Latitude": ("Latitude of the block group", "degrees north"),
+    "Longitude": ("Longitude of the block group", "degrees east (negative = west)"),
+}
+display(pd.DataFrame([(f, *FEATURE_INFO.get(f, ("", ""))) for f in FEATURES],
+                     columns=["feature", "meaning", "unit"]).set_index("feature"))
+display(pd.concat([X_df, y_sr], axis=1).head())
+
+# %% [markdown]
+### 1.2 Summary statistics
+
+Besides the usual `describe()` columns, the table adds skewness and a tail-length ratio (maximum divided by the 99th percentile). A ratio near 1 means the largest value is in line with the rest of the distribution; a large ratio flags a few extreme rows. The ratio is not meaningful for the two coordinates, so it is left blank for them.
+
+# %%
+summary = X_df.describe().T.rename(columns={"50%": "median"})
+summary["skew"] = X_df.skew()
+positive = [f for f in FEATURES if f not in ("Latitude", "Longitude")]
+summary["p99"] = X_df.quantile(0.99)
+summary["max / p99"] = (X_df[positive].max() / X_df[positive].quantile(0.99)).reindex(FEATURES)
+display(summary.round(3))
+
+target_summary = y_sr.describe().to_frame().T.rename(columns={"50%": "median"})
+target_summary["skew"] = y_sr.skew()
+display(target_summary.round(3))
+
+# %% [markdown]
+### 1.3 Missing, invalid and top-coded values
+
+# %%
+full = pd.concat([X_df, y_sr], axis=1)
+at_cap = y_sr >= TARGET_CAP
+checks = {
+    "missing values (all columns)": int(full.isna().sum().sum()),
+    "non-finite values (inf, nan)": int((~np.isfinite(full.to_numpy())).sum()),
+    "duplicated rows": int(full.duplicated().sum()),
+    "AveBedrms greater than AveRooms (impossible)": int((X_df["AveBedrms"] > X_df["AveRooms"]).sum()),
+    "AveRooms above 20 per household": int((X_df["AveRooms"] > 20).sum()),
+    "AveOccup above 10 people per household": int((X_df["AveOccup"] > 10).sum()),
+    "Population below 10 residents": int((X_df["Population"] < 10).sum()),
+    f"target at its ceiling (>= {TARGET_CAP:.0f}, i.e. $500,000)": int(at_cap.sum()),
+    "HouseAge at its maximum value (top-coded)": int((X_df["HouseAge"] == X_df["HouseAge"].max()).sum()),
+    "MedInc at its maximum value (top-coded)": int((X_df["MedInc"] == X_df["MedInc"].max()).sum()),
+}
+quality = pd.DataFrame({"rows": checks})
+quality["share of all rows"] = (quality["rows"] / len(full)).map("{:.2%}".format)
+display(quality)
+
+# %% [markdown]
+### 1.4 Target distribution
+
+# %%
+y_np = y_sr.to_numpy()
+cap_np = at_cap.to_numpy()
+cap_share = cap_np.mean()
+
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.4), gridspec_kw={"width_ratios": [1.55, 1]})
+ax = axes[0]
+bins = np.linspace(0, 5.1, 52)
+ax.hist(y_np[~cap_np], bins=bins, color=PACIFIC, alpha=0.9, edgecolor="white", linewidth=0.4, label="below the ceiling")
+ax.hist(y_np[cap_np], bins=bins, color=REDWOOD, edgecolor="white", linewidth=0.4,
+        label=f"at the ceiling ({cap_np.sum():,} rows)")
+kde = stats.gaussian_kde(y_np)
+xs = np.linspace(0, 5.1, 400)
+ax.plot(xs, kde(xs) * len(y_np) * (bins[1] - bins[0]), color=INK, lw=1.3, label="kernel density estimate")
+ax.axvline(np.median(y_np), color=GOLD, lw=1.6, ls="--", label=f"median {np.median(y_np):.2f}")
+ax.axvline(y_np.mean(), color=HIGHWAY, lw=1.6, ls=":", label=f"mean {y_np.mean():.2f}")
+ax.set_xlabel("Median house value (\\$100,000s)")
+ax.set_ylabel("Number of block groups")
+ax.set_title("Histogram of the target")
+ax.legend(loc="upper right")
+
+ax = axes[1]
+ys = np.sort(y_np)
+ax.plot(ys, np.arange(1, len(ys) + 1) / len(ys), color=PACIFIC, lw=1.8)
+ax.axhline(1 - cap_share, color=REDWOOD, lw=1, ls="--")
+ax.annotate(f"jump of {cap_share:.1%}\nat the ceiling", xy=(5.0, 1 - cap_share / 2), xytext=(2.6, 0.55),
+            fontsize=9, color=REDWOOD, arrowprops=dict(arrowstyle="->", color=REDWOOD, lw=1))
+ax.set_xlabel("Median house value (\\$100,000s)")
+ax.set_ylabel("Cumulative share of block groups")
+ax.set_title("Empirical cumulative distribution")
+skew_word = "right-skewed" if y_sr.skew() > 0.5 else "roughly symmetric"
+headline(fig, f"The target is {skew_word} and top-coded at {usd_plot(500_000)}",
+         f"Mean {y_np.mean():.2f} vs median {np.median(y_np):.2f} (skewness {y_sr.skew():.2f}); "
+         f"{cap_np.sum():,} block groups ({cap_share:.1%}) share the ceiling value")
+plt.show()
+
+# %% [markdown]
+### 1.5 Features on very different scales
+
+# %%
+spread = X_df.std().sort_values()
+tail_ratio = (X_df[positive].max() / X_df[positive].quantile(0.99)).sort_values()
+n_heavy = int((tail_ratio >= 5).sum())
+
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.2))
+ax = axes[0]
+ax.barh(spread.index, spread.values, color=[POPPY if v >= 100 else PACIFIC for v in spread.values], height=0.6)
+ax.set_xscale("log")
+for i, v in enumerate(spread.values):
+    ax.text(v * 1.15, i, f"{v:,.2f}", va="center", fontsize=8.5, color=INK)
+ax.set_xlim(spread.min() / 2, spread.max() * 10)
+ax.set_xlabel("Standard deviation in original units (log scale)")
+ax.set_title("Spread of each raw feature")
+
+ax = axes[1]
+ax.barh(tail_ratio.index, tail_ratio.values, color=[REDWOOD if v >= 5 else PACIFIC for v in tail_ratio.values], height=0.6)
+ax.set_xscale("log")
+ax.axvline(1, color=SUBTLE, lw=1, ls=":")
+for i, v in enumerate(tail_ratio.values):
+    ax.text(v * 1.15, i, f"{v:,.1f}x", va="center", fontsize=8.5, color=INK)
+ax.set_xlim(0.8, tail_ratio.max() * 10)
+ax.set_xlabel("Maximum divided by 99th percentile (log scale)")
+ax.set_title("Tail length: how extreme the largest value is")
+headline(fig, f"The features live on very different scales, and {n_heavy} have extreme tails",
+         f"Population's standard deviation is {X_df['Population'].std() / X_df['AveBedrms'].std():,.0f} times that of "
+         f"AveBedrms; AveOccup's maximum is {tail_ratio['AveOccup']:.0f} times its 99th percentile")
+plt.show()
+
+# %% [markdown]
+### 1.6 Geography of value and of the price ceiling
+
+# %%
+lon, lat = X_df["Longitude"].to_numpy(), X_df["Latitude"].to_numpy()
+
+
+def within_km(lat0, lon0, km=80):
+    dy = (lat - lat0) * 111.0
+    dx = (lon - lon0) * 111.0 * np.cos(np.deg2rad(lat0))
+    return np.hypot(dx, dy) <= km
+
+
+near_metro = within_km(*CITIES["San Francisco"]) | within_km(*CITIES["Los Angeles"])
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.7))
+order = np.argsort(y_np)
+sc = axes[0].scatter(lon[order], lat[order], c=y_np[order], cmap="viridis", s=2.5, linewidths=0, alpha=0.85)
+cb = fig.colorbar(sc, ax=axes[0], fraction=0.045, pad=0.02)
+cb.set_label("Median house value (\\$100k)")
+axes[0].set_title("Median house value by block group")
+axes[1].scatter(lon[~cap_np], lat[~cap_np], color="#CBD3DA", s=2, linewidths=0, label="below the ceiling")
+axes[1].scatter(lon[cap_np], lat[cap_np], color=REDWOOD, s=5, linewidths=0, label=f"at the {usd_plot(500_000)} ceiling")
+axes[1].legend(loc="upper right", markerscale=3)
+axes[1].set_title(f"The {cap_np.sum():,} block groups at the ceiling")
+for ax in axes:
+    geo_axes(ax)
+headline(fig, "California, drawn by its own housing data",
+         f"Each dot is one 1990 census block group. {near_metro[cap_np].mean():.0%} of capped block groups lie within "
+         f"80 km of San Francisco or Los Angeles, against {near_metro.mean():.0%} of all block groups")
+plt.show()
+
+# %% [markdown]
+### 1.7 Relationships between features and the target
+
+Spearman rank correlations are used because several features are heavily skewed; they measure monotonic association without being dominated by a handful of extreme rows.
+
+# %%
+corr = full.corr(method="spearman")
+labels = corr.columns.tolist()
+upper = np.triu(np.ones_like(corr, dtype=bool), k=1)
+with_target = corr[TARGET].drop(TARGET).sort_values()
+top_feature = with_target.abs().idxmax()
+
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 5.2), gridspec_kw={"width_ratios": [1.25, 1]})
+ax = axes[0]
+im = ax.imshow(np.ma.masked_where(upper, corr.to_numpy()), cmap="RdBu_r", vmin=-1, vmax=1)
+ax.set_xticks(range(len(labels)), labels, rotation=45, ha="right")
+ax.set_yticks(range(len(labels)), labels)
+for i in range(len(labels)):
+    for j in range(i + 1):
+        v = corr.iat[i, j]
+        ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=7.8, color="white" if abs(v) > 0.6 else INK)
+ax.grid(False)
+ax.set_title("Spearman rank correlations")
+fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
+
+ax = axes[1]
+ax.barh(with_target.index, with_target.values, color=[REDWOOD if v < 0 else HIGHWAY for v in with_target.values], height=0.6)
+ax.axvline(0, color=SUBTLE, lw=1)
+for i, v in enumerate(with_target.values):
+    ax.text(v + (0.03 if v >= 0 else -0.03), i, f"{v:+.2f}", va="center", ha="left" if v >= 0 else "right", fontsize=8.5)
+ax.set_xlim(-1, 1)
+ax.set_title(f"Rank correlation with {TARGET}")
+headline(fig, f"{top_feature} has the strongest single link to house value",
+         f"Spearman correlation with the target: {top_feature} {corr.loc[top_feature, TARGET]:+.2f}; "
+         f"Latitude and Longitude are correlated {corr.loc['Latitude', 'Longitude']:+.2f} with each other, "
+         "so location acts through their combination")
+plt.show()
+
+# %% [markdown]
+### 1.8 What the exploration means for preprocessing
+
+The data are clean in the narrow sense. There are 20,640 rows and eight numeric features with no missing or non-finite values, so nothing needs imputing. They are not clean in the statistical sense, and four findings shape what happens next.
+
+**The features sit on very different scales.** Population has a standard deviation above 1,000 people, while AveBedrms varies by less than half a bedroom. Fed to the network unchanged, the weights attached to Population would receive far larger gradients than the others and the loss surface would be badly conditioned. Standardising each feature to zero mean and unit variance is the standard remedy (LeCun et al., 2012), and every model here uses it.
+
+**Four count features have extreme right tails.** AveRooms, AveBedrms, Population and AveOccup have maxima far beyond their 99th percentiles; AveOccup reaches roughly 1,243 people per household. The scikit-learn documentation explains that these per-household averages become very large in block groups with few households and many empty homes, such as resort areas (scikit-learn developers, n.d.). These rows look like real but unusual places rather than recording errors, so I keep them. Standardisation will not tame them, though: after scaling, a handful of rows will still sit dozens of standard deviations from the mean. Extension 5b tests a log transform of these four features as a candidate fix.
+
+**The target is censored.** House values were top-coded at \$500,000 (5.0 in target units), and about 5% of block groups sit exactly at that ceiling. HouseAge and MedInc are top-coded too. A model trained on a censored target learns to predict the ceiling for the most expensive areas instead of their real value, so errors at the top of the market are understated, which is the classic limited-dependent-variable problem (Tobin, 1958). Dropping the capped rows would make the test set unrepresentative, so I keep them and analyse them separately in Step 6.
+
+**Location matters, and it is spatially structured.** The most valuable block groups cluster along the coast around San Francisco and Los Angeles. A random split puts neighbouring block groups into both the training and the test set, so the test error measures how well the model fills gaps on a map it has already seen, not how well it would price an unseen region (Roberts et al., 2017). The data are also aggregated to block groups and date from 1990 (Pace & Barry, 1997). The model therefore describes neighbourhoods in 1990, not individual homes today, and reading its group-level patterns as statements about individual houses would be an ecological fallacy (Robinson, 1950).
+
+**Preprocessing plan.** Split first; standardise with training-set statistics only; keep the outliers and the capped rows; evaluate the capped rows separately at the end.
+
+# %% [markdown]
+<a id="step2"></a>
+
+## 2. Data preprocessing
+
+### 2.1 Train, validation and test split (70 / 15 / 15)
+
+I split row indices rather than arrays, so that every later prediction can be traced back to its block group (for the error map in 6b). The first split holds out 30% of the rows; the second divides that 30% evenly into validation and test. Both use the fixed `random_state`, so the split is identical on every run.
+
+# %%
+X_all = X_df.to_numpy(dtype=np.float32)
+y_all = y_sr.to_numpy(dtype=np.float32)
+row_ids = np.arange(len(X_all))
+
+idx_train, idx_hold = train_test_split(row_ids, test_size=VAL_FRAC + TEST_FRAC, random_state=SEED, shuffle=True)
+idx_val, idx_test = train_test_split(idx_hold, test_size=TEST_FRAC / (VAL_FRAC + TEST_FRAC),
+                                     random_state=SEED, shuffle=True)
+X_train, X_val, X_test = X_all[idx_train], X_all[idx_val], X_all[idx_test]
+y_train, y_val, y_test = y_all[idx_train], y_all[idx_val], y_all[idx_test]
+SPLITS = {"train": idx_train, "validation": idx_val, "test": idx_test}
+
+assert len(set(idx_train) | set(idx_val) | set(idx_test)) == len(row_ids), "rows lost or duplicated"
+split_table = pd.DataFrame({"rows": {name: len(idx) for name, idx in SPLITS.items()}})
+split_table["share of all rows"] = (split_table["rows"] / len(row_ids)).map("{:.1%}".format)
+display(split_table)
+
+# %% [markdown]
+### 2.2 Are the three sets comparable?
+
+A random split should give the three sets the same target distribution. The two-sample Kolmogorov–Smirnov statistic *D* is the largest vertical distance between two empirical CDFs; small values mean the held-out sets look like the training set.
+
+# %%
+rep = pd.DataFrame({name: pd.Series(y_all[idx]).describe() for name, idx in SPLITS.items()}).T
+rep["share at ceiling"] = [np.mean(y_all[idx] >= TARGET_CAP) for idx in SPLITS.values()]
+for name in ("validation", "test"):
+    ks = stats.ks_2samp(y_train, y_all[SPLITS[name]])
+    rep.loc[name, "KS D vs train"] = ks.statistic
+    rep.loc[name, "KS p-value"] = ks.pvalue
+display(rep.round(4))
+
+split_colors = {"train": PACIFIC, "validation": POPPY, "test": HIGHWAY}
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 3.9), gridspec_kw={"width_ratios": [1.6, 1]})
+for name, idx in SPLITS.items():
+    ys = np.sort(y_all[idx])
+    axes[0].plot(ys, np.arange(1, len(ys) + 1) / len(ys), color=split_colors[name], lw=1.6,
+                 label=f"{name} (n = {len(idx):,})")
+axes[0].set_xlabel("Median house value (\\$100,000s)")
+axes[0].set_ylabel("Cumulative share")
+axes[0].legend(loc="lower right")
+axes[0].set_title("Target distribution by split")
+shares = rep["share at ceiling"]
+axes[1].bar(shares.index, shares.values * 100, color=[split_colors[k] for k in shares.index], width=0.55)
+for i, v in enumerate(shares.values):
+    axes[1].text(i, v * 100 + 0.08, f"{v:.2%}", ha="center", fontsize=9)
+axes[1].set_ylabel("% of rows at the ceiling")
+axes[1].set_title("Capped rows by split")
+max_d = rep["KS D vs train"].max()
+headline(fig, "The random split keeps the three sets comparable" if max_d < 0.03 else
+         "The held-out targets differ noticeably from the training targets",
+         f"Largest Kolmogorov-Smirnov distance between the training target and a held-out target: D = {max_d:.3f}")
+plt.show()
+
+# %% [markdown]
+### 2.3 Standardisation fitted on the training set only
+
+Each feature $j$ is transformed as $z_{ij} = (x_{ij} - \hat{\mu}_j) / \hat{\sigma}_j$, where $\hat{\mu}_j$ and $\hat{\sigma}_j$ are the mean and standard deviation of feature $j$ **in the training rows**. The validation and test rows are transformed with those same training statistics, never with their own.
+
+# %%
+scaler = StandardScaler()
+scaler.fit(X_train)                                         # statistics from the training rows only
+X_train_s = scaler.transform(X_train).astype(np.float32)
+X_val_s = scaler.transform(X_val).astype(np.float32)        # same training statistics, not refitted
+X_test_s = scaler.transform(X_test).astype(np.float32)      # same training statistics, not refitted
+DATA["raw"] = (X_train_s, y_train, X_val_s, y_val)
+
+after = pd.DataFrame({
+    "train mean": X_train_s.mean(axis=0), "train SD": X_train_s.std(axis=0),
+    "validation mean": X_val_s.mean(axis=0), "validation SD": X_val_s.std(axis=0),
+    "test mean": X_test_s.mean(axis=0), "test SD": X_test_s.std(axis=0),
+}, index=FEATURES)
+display(after.round(3))
+
+# %% [markdown]
+### 2.4 Leakage audit and the outliers that scaling leaves behind
+
+To make the leakage argument concrete, the next cell fits a second scaler on all 20,640 rows (the wrong way, used only for this comparison) and measures how far its statistics move from the training-only ones. The figure then shows what standardisation does and does not fix.
+
+# %%
+leaky = StandardScaler().fit(X_all)        # deliberately wrong: sees validation and test rows
+audit = pd.DataFrame({
+    "train-only mean": scaler.mean_, "all-data mean": leaky.mean_,
+    "mean shift (train SDs)": (leaky.mean_ - scaler.mean_) / scaler.scale_,
+    "train-only SD": scaler.scale_, "all-data SD": leaky.scale_,
+    "SD ratio (all / train)": leaky.scale_ / scaler.scale_,
+}, index=FEATURES)
+display(audit.round(4))
+
+max_z = pd.DataFrame({name: np.abs(arr).max(axis=0) for name, arr in
+                      [("train", X_train_s), ("validation", X_val_s), ("test", X_test_s)]}, index=FEATURES)
+fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.3), gridspec_kw={"width_ratios": [1.3, 1]})
+ax = axes[0]
+bp = ax.boxplot([X_train_s[:, j] for j in range(len(FEATURES))], vert=False, whis=(1, 99), patch_artist=True,
+                medianprops=dict(color=INK), flierprops=dict(marker=".", ms=2.5, alpha=0.35, markeredgecolor=SUBTLE))
+for patch in bp["boxes"]:
+    patch.set_facecolor("#D5E3F1")
+    patch.set_edgecolor(PACIFIC)
+ax.set_yticks(range(1, len(FEATURES) + 1), FEATURES)
+ax.set_xscale("symlog", linthresh=3)
+ax.axvline(0, color=SUBTLE, lw=0.8)
+ax.set_xlabel("Standardised value (linear within ±3, logarithmic beyond)")
+ax.set_title("Training features after standardisation (whiskers: 1st-99th pct)")
+
+ax = axes[1]
+order_z = max_z["train"].sort_values().index
+ypos = np.arange(len(order_z))
+for k, (name, col) in enumerate(zip(["train", "validation", "test"], [PACIFIC, POPPY, HIGHWAY])):
+    ax.barh(ypos + (k - 1) * 0.26, max_z.loc[order_z, name], height=0.26, color=col, label=name)
+ax.set_yticks(ypos, order_z)
+ax.set_xscale("log")
+ax.axvline(3, color=REDWOOD, ls="--", lw=1)
+ax.text(3.2, len(order_z) - 0.6, "|z| = 3", color=REDWOOD, fontsize=8.5)
+ax.legend(loc="lower right")
+ax.set_xlabel("Largest |z| in each split (log scale)")
+ax.set_title("The most extreme standardised value per feature")
+headline(fig, "Scaling equalises the spread but leaves extreme rows in place",
+         f"The most extreme training value sits {max_z['train'].max():.0f} standard deviations from the mean "
+         f"({max_z['train'].idxmax()}); the largest leakage shift in any mean is "
+         f"{audit['mean shift (train SDs)'].abs().max():.3f} SD")
+plt.show()
+
+# %% [markdown]
+### 2.5 Why scaling matters, and why the scaler may only see the training set
+
+Gradient descent moves every weight by a step proportional to its gradient, and the gradient of a first-layer weight is proportional to the input it multiplies. With raw inputs, a weight connected to Population (values in the thousands) would receive gradients thousands of times larger than a weight connected to AveBedrms (values near 1), so a single learning rate would be too large for one and too small for the other. Standardising puts all inputs on the same footing, makes the loss surface better conditioned, and keeps the initial pre-activations in the range where tanh and sigmoid units still pass back useful gradients (LeCun et al., 2012; Goodfellow et al., 2016). It also matches the assumption behind Keras's default Glorot initialisation, which sets the initial weight scale for inputs of roughly unit variance (Glorot & Bengio, 2010).
+
+The scaler's means and standard deviations are parameters estimated from data, so they are part of the model. Estimating them on the full dataset would let information about the validation and test rows, including their means, spread and outliers, flow into the training pipeline, and the held-out scores would stop being measurements on genuinely unseen data. That is data leakage (Kaufman et al., 2012). The audit shows that the means would barely move, by less than 0.01 training standard deviations, but the spread of AveOccup would shrink by 16%, because its most extreme block group happens to sit among the training rows; leakage would have changed that feature's scale noticeably. The principle does not depend on the size of the effect, though: a deployed model can only ever be scaled with statistics from data that existed at training time, and the evaluation has to imitate that. The validation and test means in 2.3 are close to zero without being exactly zero, which is the expected signature of a scaler that has seen the training rows only.

@@ -1,0 +1,30 @@
+{
+  "schema_version": 3,
+  "created_utc": "fixture",
+  "files": {
+    "results.json": {
+      "sha256": "9f360ddfaa5730bf0482a8f363ec2fabb5a7940f2404318bdb418dd3c63d9b1a",
+      "bytes": 34080
+    },
+    "histories.json.gz": {
+      "sha256": "b38ba76dfa38670404c238be31a2a0f0ec54c87293a7be927f409157417e9021",
+      "bytes": 3007
+    },
+    "dataset.csv.gz": {
+      "sha256": "b74e70f8f3de53132d4221efcbae2f1bebe7f2bfaf6b98c9450a956cb575cfed",
+      "bytes": 73052
+    },
+    "test_predictions.csv.gz": {
+      "sha256": "967239050b722011479db2d3aae804108f1e104a15bdd4105642867c6d50a2a4",
+      "bytes": 29148
+    },
+    "model_final.npz": {
+      "sha256": "6e4399f72f564304dd3f06ceb1937e6b998dab7b1c57665fb89bb02fc1d0322f",
+      "bytes": 26672
+    },
+    "model_tuned.npz": {
+      "sha256": "ee96a33710ad65a525f8946e3c61af65e976f9ae367f4f8c6bdcd4f9b71186bc",
+      "bytes": 26796
+    }
+  }
+}

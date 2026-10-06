@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+# secrets and personal notebook editions never go to GitHub
+.streamlit/secrets.toml
+*.private.json
+# training cache, local saves and executed exports are machine-specific
+artifacts/runs/
+user_data/
+*.executed.ipynb
+*.print.html
+exports/

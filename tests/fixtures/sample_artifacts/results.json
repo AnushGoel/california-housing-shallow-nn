@@ -1,0 +1,1243 @@
+{
+  "meta": {
+    "author": "Anush Goel",
+    "generated": "2026-10-06 19:35",
+    "versions": {
+      "python": "3.12.3",
+      "tensorflow": "numpy-test-double",
+      "keras": "numpy-test-double",
+      "numpy": "2.4.4",
+      "pandas": "3.0.2",
+      "scikit-learn": "1.8.0",
+      "scipy": "1.17.1",
+      "matplotlib": "3.10.8"
+    },
+    "seed": 42,
+    "batch_size": 64,
+    "epochs": 8,
+    "deterministic_ops": true,
+    "quick_mode": false,
+    "robustness_seeds": [
+      42,
+      7
+    ],
+    "hpo_trials": 4,
+    "hpo_confirm_seeds": [
+      42,
+      7
+    ],
+    "schema_version": 3
+  },
+  "data": {
+    "n_rows": 20640,
+    "features": [
+      "MedInc",
+      "HouseAge",
+      "AveRooms",
+      "AveBedrms",
+      "Population",
+      "AveOccup",
+      "Latitude",
+      "Longitude"
+    ],
+    "feature_info": {
+      "MedInc": [
+        "Median household income in the block group",
+        "$10,000s"
+      ],
+      "HouseAge": [
+        "Median age of the houses in the block group",
+        "years"
+      ],
+      "AveRooms": [
+        "Average number of rooms per household",
+        "rooms"
+      ],
+      "AveBedrms": [
+        "Average number of bedrooms per household",
+        "bedrooms"
+      ],
+      "Population": [
+        "Number of residents in the block group",
+        "people"
+      ],
+      "AveOccup": [
+        "Average number of people per household",
+        "people"
+      ],
+      "Latitude": [
+        "Latitude of the block group",
+        "degrees north"
+      ],
+      "Longitude": [
+        "Longitude of the block group",
+        "degrees east (negative = west)"
+      ]
+    },
+    "target": "MedHouseVal",
+    "split_sizes": {
+      "train": 14448,
+      "validation": 3096,
+      "test": 3096
+    },
+    "cap_count": 201,
+    "cap_share": 0.009738372093023256,
+    "summary": {
+      "MedInc": {
+        "count": 20640.0,
+        "mean": 3.8630670541,
+        "std": 1.8252006328,
+        "min": 0.6517296942,
+        "25%": 2.5804900131,
+        "median": 3.4808082084,
+        "75%": 4.7400199988,
+        "max": 15.0001,
+        "skew": 1.4753761964,
+        "p99": 9.9042162376,
+        "max / p99": 1.5145166099
+      },
+      "HouseAge": {
+        "count": 20640.0,
+        "mean": 28.870251938,
+        "std": 11.9664091582,
+        "min": 1.0,
+        "25%": 21.0,
+        "median": 29.0,
+        "75%": 37.0,
+        "max": 52.0,
+        "skew": -0.0727426275,
+        "p99": 52.0,
+        "max / p99": 1.0
+      },
+      "AveRooms": {
+        "count": 20640.0,
+        "mean": 5.4774946882,
+        "std": 3.7886405925,
+        "min": 1.6410409431,
+        "25%": 4.3890837863,
+        "median": 5.191028266,
+        "75%": 6.1477024812,
+        "max": 202.4677527394,
+        "skew": 28.668706681,
+        "p99": 9.4128263577,
+        "max / p99": 21.5097724154
+      },
+      "AveBedrms": {
+        "count": 20640.0,
+        "mean": 1.1253365404,
+        "std": 0.7884963387,
+        "min": 0.3183213288,
+        "25%": 0.8854705198,
+        "median": 1.0621166096,
+        "75%": 1.273188615,
+        "max": 46.5698113945,
+        "skew": 28.9337072414,
+        "p99": 2.0142928154,
+        "max / p99": 23.1196830164
+      },
+      "Population": {
+        "count": 20640.0,
+        "mean": 1468.8276583031,
+        "std": 1190.2205877862,
+        "min": 46.1847606833,
+        "25%": 716.9072716046,
+        "median": 1150.1927652713,
+        "75%": 1836.7318491046,
+        "max": 32928.6848169357,
+        "skew": 3.5732813269,
+        "p99": 5915.5410072084,
+        "max / p99": 5.5664705522
+      },
+      "AveOccup": {
+        "count": 20640.0,
+        "mean": 3.079307195,
+        "std": 7.444094855,
+        "min": 1.038564528,
+        "25%": 2.4163865883,
+        "median": 2.849450293,
+        "75%": 3.3740270707,
+        "max": 585.5877917406,
+        "skew": 60.064813148,
+        "p99": 5.1114421455,
+        "max / p99": 114.5641044295
+      },
+      "Latitude": {
+        "count": 20640.0,
+        "mean": 35.6870409159,
+        "std": 2.0102672422,
+        "min": 32.54,
+        "25%": 33.9168229118,
+        "median": 35.0800305838,
+        "75%": 37.5900622187,
+        "max": 40.1755092849,
+        "skew": 0.0985003152,
+        "p99": 39.2084085011,
+        "max / p99": null
+      },
+      "Longitude": {
+        "count": 20640.0,
+        "mean": -119.6442130041,
+        "std": 1.9091771251,
+        "min": -123.9092532926,
+        "25%": -121.6615893239,
+        "median": -119.0603783918,
+        "75%": -118.0470879766,
+        "max": -115.3679901015,
+        "skew": -0.2754303807,
+        "p99": -116.5541010257,
+        "max / p99": null
+      }
+    }
+  },
+  "baseline": {
+    "best_epoch": 8,
+    "best_val_loss": 0.28777220845222473,
+    "curve_stats": {
+      "final_train_mse": 0.28323093578136904,
+      "final_val_mse": 0.28777220845222473,
+      "best_val_mse": 0.28777220845222473,
+      "best_epoch": 8,
+      "gap_end": 0.004541272670855689,
+      "gap_end_pct": 1.6033815862406986,
+      "val_trend_pct": -41.98119250113081,
+      "train_trend_pct": -80.99119920971333,
+      "epochs_to_95pct": 6,
+      "val_volatility_x1e3": 26.74164926655728,
+      "max_val_rise": NaN,
+      "end_above_best_pct": 0.0
+    },
+    "repro_gap": 0.0
+  },
+  "widths": {
+    "table": [
+      {
+        "Hidden units": 16,
+        "Parameters": 161,
+        "Final training loss": 0.3166530133,
+        "Best validation loss": 0.3181473017,
+        "Epoch of best validation loss": 8,
+        "Final validation loss": 0.3181473017,
+        "Validation MAE at best epoch": 0.4527879655,
+        "Gap at last epoch": 0.0014942883,
+        "Epochs to 95% of improvement": 6
+      },
+      {
+        "Hidden units": 64,
+        "Parameters": 641,
+        "Final training loss": 0.2832309358,
+        "Best validation loss": 0.2877722085,
+        "Epoch of best validation loss": 8,
+        "Final validation loss": 0.2877722085,
+        "Validation MAE at best epoch": 0.4286405146,
+        "Gap at last epoch": 0.0045412727,
+        "Epochs to 95% of improvement": 6
+      },
+      {
+        "Hidden units": 256,
+        "Parameters": 2561,
+        "Final training loss": 0.2674043072,
+        "Best validation loss": 0.2733708918,
+        "Epoch of best validation loss": 7,
+        "Final validation loss": 0.2923374772,
+        "Validation MAE at best epoch": 0.4166283906,
+        "Gap at last epoch": 0.02493317,
+        "Epochs to 95% of improvement": 6
+      }
+    ],
+    "seed_table": [
+      {
+        "Hidden units": 16,
+        "seeds": 2,
+        "mean best val loss": 0.3216740638,
+        "SD": 0.0049875948,
+        "SE": 0.0035267621,
+        "min": 0.3181473017,
+        "max": 0.3252008259,
+        "mean best epoch": 8.0,
+        "mean final train loss": 0.3189419985
+      },
+      {
+        "Hidden units": 64,
+        "seeds": 2,
+        "mean best val loss": 0.2904710472,
+        "SD": 0.0038167343,
+        "SE": 0.0026988387,
+        "min": 0.2877722085,
+        "max": 0.2931698859,
+        "mean best epoch": 8.0,
+        "mean final train loss": 0.2870386183
+      },
+      {
+        "Hidden units": 256,
+        "seeds": 2,
+        "mean best val loss": 0.2728767693,
+        "SD": 0.0006987947,
+        "SE": 0.0004941225,
+        "min": 0.2723826468,
+        "max": 0.2733708918,
+        "mean best epoch": 7.0,
+        "mean final train loss": 0.2676420826
+      }
+    ],
+    "selected": 256,
+    "decision": {
+      "lowest best validation loss, seed-42 run": "256 units (0.2734)",
+      "lowest mean over 2 seeds": "256 units (0.2729 \u00b1 0.0005 SE)",
+      "one-standard-error threshold": "0.2734",
+      "smallest width within the threshold": "256 units",
+      "selected hidden-layer size": "256 units"
+    }
+  },
+  "activations": {
+    "table": [
+      {
+        "Activation": "relu",
+        "Best validation loss": 0.2733708918,
+        "Epoch of best validation loss": 7,
+        "Final training loss": 0.2674043072,
+        "Final validation loss": 0.2923374772,
+        "Epochs to common target": 4.0,
+        "Epochs to 95% of own improvement": 6,
+        "Volatility, last 30 epochs (x 1e-3)": 35.9274932272,
+        "Largest rise after epoch 10": null,
+        "Gap at last epoch": 0.02493317
+      },
+      {
+        "Activation": "tanh",
+        "Best validation loss": 0.3012678027,
+        "Epoch of best validation loss": 8,
+        "Final training loss": 0.3023265462,
+        "Final validation loss": 0.3012678027,
+        "Epochs to common target": null,
+        "Epochs to 95% of own improvement": 8,
+        "Volatility, last 30 epochs (x 1e-3)": 5.6966136703,
+        "Largest rise after epoch 10": null,
+        "Gap at last epoch": -0.0010587435
+      },
+      {
+        "Activation": "sigmoid",
+        "Best validation loss": 0.3057884872,
+        "Epoch of best validation loss": 7,
+        "Final training loss": 0.3068993864,
+        "Final validation loss": 0.30802086,
+        "Epochs to common target": null,
+        "Epochs to 95% of own improvement": 7,
+        "Volatility, last 30 epochs (x 1e-3)": 3.9764727215,
+        "Largest rise after epoch 10": null,
+        "Gap at last epoch": 0.0011214736
+      }
+    ],
+    "seed_table": [
+      {
+        "Activation": "relu",
+        "seeds": 2,
+        "mean best val loss": 0.2728767693,
+        "SD": 0.0006987947,
+        "SE": 0.0004941225,
+        "min": 0.2723826468,
+        "max": 0.2733708918,
+        "mean best epoch": 7.0,
+        "mean final train loss": 0.2676420826
+      },
+      {
+        "Activation": "tanh",
+        "seeds": 2,
+        "mean best val loss": 0.3016034365,
+        "SD": 0.0004746578,
+        "SE": 0.0003356338,
+        "min": 0.3012678027,
+        "max": 0.3019390702,
+        "mean best epoch": 8.0,
+        "mean final train loss": 0.303359409
+      },
+      {
+        "Activation": "sigmoid",
+        "seeds": 2,
+        "mean best val loss": 0.3054910898,
+        "SD": 0.0004205834,
+        "SE": 0.0002973974,
+        "min": 0.3051936924,
+        "max": 0.3057884872,
+        "mean best epoch": 7.0,
+        "mean final train loss": 0.3066578914
+      }
+    ],
+    "selected": "relu",
+    "decision": {
+      "lowest best validation loss, seed-42 run": "relu (0.2734)",
+      "lowest mean over 2 seeds": "relu (0.2729 \u00b1 0.0005 SE)",
+      "one-standard-error threshold": "0.2734",
+      "selected activation (ties go to ReLU)": "relu",
+      "final configuration": "256 relu units"
+    },
+    "saturation": [
+      {
+        "Activation": "relu",
+        "flat region (ReLU: z <= 0; others: saturated)": "z <= 0",
+        "share of unit-example pairs in the flat region": 0.4126609219,
+        "units flat for more than 99% of examples": 0,
+        "units in the layer": 256,
+        "median |z|": 0.173116684
+      },
+      {
+        "Activation": "tanh",
+        "flat region (ReLU: z <= 0; others: saturated)": "|z| > 1.82",
+        "share of unit-example pairs in the flat region": 0.0009376298,
+        "units flat for more than 99% of examples": 0,
+        "units in the layer": 256,
+        "median |z|": 0.1338085532
+      },
+      {
+        "Activation": "sigmoid",
+        "flat region (ReLU: z <= 0; others: saturated)": "|z| > 3.64",
+        "share of unit-example pairs in the flat region": 0.0004525929,
+        "units flat for more than 99% of examples": 0,
+        "units in the layer": 256,
+        "median |z|": 0.1493566334
+      }
+    ],
+    "target_level": 0.30070798099040985
+  },
+  "hpo": {
+    "space": {
+      "hidden_units": [
+        32,
+        64,
+        128,
+        256,
+        512
+      ],
+      "activation": [
+        "relu",
+        "elu",
+        "gelu",
+        "tanh"
+      ],
+      "lr": [
+        0.0003,
+        0.01
+      ],
+      "l2": [
+        0.0,
+        1e-06,
+        1e-05,
+        0.0001
+      ],
+      "dropout": [
+        0.0,
+        0.1,
+        0.2
+      ],
+      "features": [
+        "raw",
+        "log"
+      ]
+    },
+    "trials": [
+      {
+        "trial": 0,
+        "hidden_units": 256,
+        "activation": "relu",
+        "lr": 0.001,
+        "l2": 0.0,
+        "dropout": 0.0,
+        "features": "raw",
+        "best val MSE": 0.2622649968,
+        "best epoch": 12,
+        "epochs run": 12,
+        "minutes": 0.0085309566
+      },
+      {
+        "trial": 1,
+        "hidden_units": 32,
+        "activation": "tanh",
+        "lr": 0.001398,
+        "l2": 1e-06,
+        "dropout": 0.2,
+        "features": "raw",
+        "best val MSE": 0.3024680316,
+        "best epoch": 8,
+        "epochs run": 11,
+        "minutes": 0.0053969216
+      },
+      {
+        "trial": 2,
+        "hidden_units": 256,
+        "activation": "relu",
+        "lr": 0.009181,
+        "l2": 0.0,
+        "dropout": 0.2,
+        "features": "log",
+        "best val MSE": 0.250949502,
+        "best epoch": 8,
+        "epochs run": 11,
+        "minutes": 0.0120333452
+      },
+      {
+        "trial": 3,
+        "hidden_units": 256,
+        "activation": "tanh",
+        "lr": 0.00047,
+        "l2": 0.0001,
+        "dropout": 0.1,
+        "features": "log",
+        "best val MSE": 0.3057649732,
+        "best epoch": 2,
+        "epochs run": 5,
+        "minutes": 0.0056279282
+      }
+    ],
+    "confirm_table": [
+      {
+        "trial": 2,
+        "seeds": 2,
+        "mean best val loss": 0.2523237616,
+        "SD": 0.0019434966,
+        "SE": 0.0013742596,
+        "min": 0.250949502,
+        "max": 0.2536980212,
+        "mean best epoch": 10.0,
+        "mean final train loss": 0.2739072591
+      },
+      {
+        "trial": 0,
+        "seeds": 2,
+        "mean best val loss": 0.262285009,
+        "SD": 2.83016e-05,
+        "SE": 2.00123e-05,
+        "min": 0.2622649968,
+        "max": 0.2623050213,
+        "mean best epoch": 12.0,
+        "mean final train loss": 0.259184733
+      },
+      {
+        "trial": 1,
+        "seeds": 2,
+        "mean best val loss": 0.3025698811,
+        "SD": 0.0001440369,
+        "SE": 0.0001018494,
+        "min": 0.3024680316,
+        "max": 0.3026717305,
+        "mean best epoch": 6.5,
+        "mean final train loss": 0.3400049359
+      }
+    ],
+    "champion_trial": 2,
+    "champion_cfg": {
+      "hidden_units": 256,
+      "activation": "relu",
+      "seed": 42,
+      "epochs": 12,
+      "batch_size": 64,
+      "lr": 0.009181,
+      "l2": 0.0,
+      "dropout": 0.2,
+      "patience": 3,
+      "reduce_lr": true,
+      "features": "log"
+    },
+    "champion_best_val": 0.250949501991272
+  },
+  "final": {
+    "units": 256,
+    "activation": "relu",
+    "best_epoch": 7,
+    "best_val_loss": 0.2733708918094635,
+    "n_params": 2561,
+    "test_mse": 0.27398887276649475,
+    "test_mae": 0.41183003783226013,
+    "test_rmse": 0.5234394642807273,
+    "test_r2": 0.6967374086380005,
+    "cap_table": [
+      {
+        "index": "at the $500k ceiling",
+        "block groups": 36.0,
+        "share of test set": 0.011627907,
+        "MAE": 0.6484074593,
+        "MAE ($)": 64840.74609375,
+        "mean prediction": 4.6236152649,
+        "mean signed error (pred - true)": -0.3763948679
+      },
+      {
+        "index": "below the ceiling",
+        "block groups": 3060.0,
+        "share of test set": 0.988372093,
+        "MAE": 0.4090467691,
+        "MAE ($)": 40904.67578125,
+        "mean prediction": 2.0543687344,
+        "mean signed error (pred - true)": 0.0260202494
+      }
+    ],
+    "pred_above_cap": 10
+  },
+  "comparison_val": [
+    {
+      "index": "Shallow NN, reference protocol (256 relu)",
+      "MSE": 0.2733708918,
+      "MAE": 0.4166283906,
+      "R2": 0.708768785,
+      "MAE ($)": 41662.8390550613
+    },
+    {
+      "index": "Shallow NN, tuned (trial 2)",
+      "MSE": 0.250949502,
+      "MAE": 0.4024681151,
+      "R2": 0.7326550484,
+      "MAE ($)": 40246.8115091324
+    },
+    {
+      "index": "Mean predictor (ignores the features)",
+      "MSE": 0.9389147162,
+      "MAE": 0.760442555,
+      "R2": -0.0002574921,
+      "MAE ($)": 76044.2554950714
+    },
+    {
+      "index": "Linear regression",
+      "MSE": 0.3089023232,
+      "MAE": 0.4462925196,
+      "R2": 0.6709159613,
+      "MAE ($)": 44629.2519569397
+    },
+    {
+      "index": "Gradient-boosted trees (HistGradientBoosting)",
+      "MSE": 0.2156773973,
+      "MAE": 0.3726696218,
+      "R2": 0.7702315883,
+      "MAE ($)": 37266.962175188
+    }
+  ],
+  "comparison_test": [
+    {
+      "index": "Shallow NN, reference protocol (256 relu) [final model]",
+      "MSE": 0.2739888728,
+      "MAE": 0.4118300378,
+      "R2": 0.6967374086,
+      "MAE ($)": 41183.003783226
+    },
+    {
+      "index": "Shallow NN, tuned (trial 2) [extension]",
+      "MSE": 0.2459768802,
+      "MAE": 0.3962598443,
+      "R2": 0.7277422547,
+      "MAE ($)": 39625.9844303131
+    },
+    {
+      "index": "Mean predictor (ignores the features)",
+      "MSE": 0.9036311507,
+      "MAE": 0.7405397296,
+      "R2": -0.0001777411,
+      "MAE ($)": 74053.9729595184
+    },
+    {
+      "index": "Linear regression",
+      "MSE": 0.3027215898,
+      "MAE": 0.4401631653,
+      "R2": 0.6649347544,
+      "MAE ($)": 44016.3165330887
+    },
+    {
+      "index": "Gradient-boosted trees (HistGradientBoosting)",
+      "MSE": 0.208256249,
+      "MAE": 0.364867375,
+      "R2": 0.7694930562,
+      "MAE ($)": 36486.7374990013
+    }
+  ],
+  "importance": [
+    {
+      "index": "MedInc",
+      "mean rise in test MSE": 1.0398964345,
+      "SD over 10 shuffles": 0.014251266,
+      "rise as % of test MSE": 379.5396594196
+    },
+    {
+      "index": "Longitude",
+      "mean rise in test MSE": 0.3858680904,
+      "SD over 10 shuffles": 0.0081769863,
+      "rise as % of test MSE": 140.8334895118
+    },
+    {
+      "index": "Latitude",
+      "mean rise in test MSE": 0.3331050158,
+      "SD over 10 shuffles": 0.0087459782,
+      "rise as % of test MSE": 121.5761108805
+    },
+    {
+      "index": "AveBedrms",
+      "mean rise in test MSE": 0.0405093849,
+      "SD over 10 shuffles": 0.0011246177,
+      "rise as % of test MSE": 14.7850474589
+    },
+    {
+      "index": "AveRooms",
+      "mean rise in test MSE": 0.0374286592,
+      "SD over 10 shuffles": 0.0023078496,
+      "rise as % of test MSE": 13.6606493624
+    },
+    {
+      "index": "HouseAge",
+      "mean rise in test MSE": 0.0303738922,
+      "SD over 10 shuffles": 0.0033968339,
+      "rise as % of test MSE": 11.0858123111
+    },
+    {
+      "index": "Population",
+      "mean rise in test MSE": -0.0005644232,
+      "SD over 10 shuffles": 0.0007481529,
+      "rise as % of test MSE": -0.2060022357
+    },
+    {
+      "index": "AveOccup",
+      "mean rise in test MSE": -0.0012008876,
+      "SD over 10 shuffles": 0.0020070529,
+      "rise as % of test MSE": -0.4382979311
+    }
+  ],
+  "largest_errors": [
+    {
+      "index": 0,
+      "row id": 6797,
+      "MedInc": 1.7165067196,
+      "HouseAge": 1.0,
+      "AveRooms": 152.0777130127,
+      "AveBedrms": 27.6900234222,
+      "Population": 843.3416748047,
+      "AveOccup": 2.7411632538,
+      "Latitude": 34.7251014709,
+      "Longitude": -117.5665512085,
+      "true": 0.3313962221,
+      "predicted": 4.0648202896,
+      "residual": 3.7334241867,
+      "most extreme input": "AveRooms (|z| = 37.2)"
+    },
+    {
+      "index": 1,
+      "row id": 4012,
+      "MedInc": 4.755979538,
+      "HouseAge": 14.0,
+      "AveRooms": 4.0967888832,
+      "AveBedrms": 0.9055796862,
+      "Population": 999.5673828125,
+      "AveOccup": 537.9584350586,
+      "Latitude": 35.8850288391,
+      "Longitude": -119.7699508667,
+      "true": 1.7934498787,
+      "predicted": 5.5238633156,
+      "residual": 3.7304134369,
+      "most extreme input": "AveOccup (|z| = 73.2)"
+    },
+    {
+      "index": 2,
+      "row id": 3468,
+      "MedInc": 3.6353375912,
+      "HouseAge": 8.0,
+      "AveRooms": 4.7473893166,
+      "AveBedrms": 1.016109705,
+      "Population": 3506.9558105469,
+      "AveOccup": 3.7077226639,
+      "Latitude": 37.3822402954,
+      "Longitude": -122.2856292725,
+      "true": 4.1733856201,
+      "predicted": 2.0702245235,
+      "residual": -2.1031610966,
+      "most extreme input": "HouseAge (|z| = 1.7)"
+    },
+    {
+      "index": 3,
+      "row id": 7198,
+      "MedInc": 3.3912131786,
+      "HouseAge": 48.0,
+      "AveRooms": 4.2138166428,
+      "AveBedrms": 0.8154703975,
+      "Population": 410.8163757324,
+      "AveOccup": 2.8867766857,
+      "Latitude": 38.5153160095,
+      "Longitude": -123.2054443359,
+      "true": 0.7156308889,
+      "predicted": 2.6571819782,
+      "residual": 1.9415510893,
+      "most extreme input": "Longitude (|z| = 1.9)"
+    },
+    {
+      "index": 4,
+      "row id": 16341,
+      "MedInc": 3.1190242767,
+      "HouseAge": 34.0,
+      "AveRooms": 5.6938781738,
+      "AveBedrms": 1.1470336914,
+      "Population": 495.447479248,
+      "AveOccup": 2.8560647964,
+      "Latitude": 38.2492980957,
+      "Longitude": -123.0784988403,
+      "true": 0.4930170178,
+      "predicted": 2.3179728985,
+      "residual": 1.8249559402,
+      "most extreme input": "Longitude (|z| = 1.8)"
+    },
+    {
+      "index": 5,
+      "row id": 1968,
+      "MedInc": 2.2407412529,
+      "HouseAge": 49.0,
+      "AveRooms": 6.8279480934,
+      "AveBedrms": 1.4578322172,
+      "Population": 1999.8570556641,
+      "AveOccup": 2.0858263969,
+      "Latitude": 36.6404495239,
+      "Longitude": -122.7336578369,
+      "true": 0.3942047358,
+      "predicted": 2.2029061317,
+      "residual": 1.808701396,
+      "most extreme input": "HouseAge (|z| = 1.7)"
+    },
+    {
+      "index": 6,
+      "row id": 10275,
+      "MedInc": 2.0935251713,
+      "HouseAge": 17.0,
+      "AveRooms": 103.7933654785,
+      "AveBedrms": 24.6429405212,
+      "Population": 2784.9404296875,
+      "AveOccup": 3.1705040932,
+      "Latitude": 35.7894210815,
+      "Longitude": -120.5285415649,
+      "true": 0.4335560501,
+      "predicted": 2.2398631573,
+      "residual": 1.8063070774,
+      "most extreme input": "AveBedrms (|z| = 28.3)"
+    },
+    {
+      "index": 7,
+      "row id": 1213,
+      "MedInc": 2.9741966724,
+      "HouseAge": 8.0,
+      "AveRooms": 7.7704529762,
+      "AveBedrms": 1.4473606348,
+      "Population": 921.3997192383,
+      "AveOccup": 4.1682219505,
+      "Latitude": 38.6491851807,
+      "Longitude": -123.3804550171,
+      "true": 0.189580977,
+      "predicted": 1.9610741138,
+      "residual": 1.7714931965,
+      "most extreme input": "Longitude (|z| = 2.0)"
+    },
+    {
+      "index": 8,
+      "row id": 900,
+      "MedInc": 4.2221794128,
+      "HouseAge": 9.0,
+      "AveRooms": 5.5554127693,
+      "AveBedrms": 1.1256616116,
+      "Population": 473.8062744141,
+      "AveOccup": 2.2524967194,
+      "Latitude": 32.5400009155,
+      "Longitude": -119.4157180786,
+      "true": 0.6040785909,
+      "predicted": 2.3284204006,
+      "residual": 1.7243418694,
+      "most extreme input": "HouseAge (|z| = 1.7)"
+    },
+    {
+      "index": 9,
+      "row id": 1588,
+      "MedInc": 3.057487011,
+      "HouseAge": 30.0,
+      "AveRooms": 3.6390278339,
+      "AveBedrms": 0.8144173622,
+      "Population": 1629.6009521484,
+      "AveOccup": 2.9310750961,
+      "Latitude": 37.952495575,
+      "Longitude": -123.3624954224,
+      "true": 0.737462163,
+      "predicted": 2.3901417255,
+      "residual": 1.6526795626,
+      "most extreme input": "Longitude (|z| = 1.9)"
+    }
+  ],
+  "evaluation": {
+    "n_boot": 2000,
+    "bootstrap": [
+      {
+        "model": "Final model",
+        "MAE": 0.4118300378,
+        "MAE low": 0.3999523632,
+        "MAE high": 0.4228805415,
+        "RMSE": 0.5234394643,
+        "RMSE low": 0.5067716449,
+        "RMSE high": 0.5417959854,
+        "R2": 0.6967374086,
+        "R2 low": 0.671223557,
+        "R2 high": 0.7187113464
+      },
+      {
+        "model": "Tuned champion",
+        "MAE": 0.3962598443,
+        "MAE low": 0.3855951928,
+        "MAE high": 0.4070869997,
+        "RMSE": 0.4959605631,
+        "RMSE low": 0.4830176532,
+        "RMSE high": 0.508293277,
+        "R2": 0.7277422547,
+        "R2 low": 0.7093099073,
+        "R2 high": 0.7455924839
+      },
+      {
+        "model": "Linear regression",
+        "MAE": 0.4401631653,
+        "MAE low": 0.4279134773,
+        "MAE high": 0.4519411281,
+        "RMSE": 0.5502014084,
+        "RMSE low": 0.5361753583,
+        "RMSE high": 0.5636474267,
+        "R2": 0.6649347544,
+        "R2 low": 0.6438759953,
+        "R2 high": 0.6846143872
+      },
+      {
+        "model": "Gradient-boosted trees",
+        "MAE": 0.364867375,
+        "MAE low": 0.3551594725,
+        "MAE high": 0.3742409278,
+        "RMSE": 0.4563510151,
+        "RMSE low": 0.4450195191,
+        "RMSE high": 0.4674899275,
+        "R2": 0.7694930562,
+        "R2 low": 0.753798533,
+        "R2 high": 0.7842401083
+      }
+    ],
+    "paired": [
+      {
+        "comparison": "Final model vs Tuned champion",
+        "MAE difference ($)": 1557.0193529129,
+        "95% CI low ($)": 1045.0710356236,
+        "95% CI high ($)": 2093.9955115318,
+        "two-sided bootstrap p": 0.0005,
+        "verdict": "final model worse"
+      },
+      {
+        "comparison": "Final model vs Linear regression",
+        "MAE difference ($)": -2833.3127498627,
+        "95% CI low ($)": -3433.4828704596,
+        "95% CI high ($)": -2217.8918123245,
+        "two-sided bootstrap p": 0.0005,
+        "verdict": "final model better"
+      },
+      {
+        "comparison": "Final model vs Gradient-boosted trees",
+        "MAE difference ($)": 4696.2662842247,
+        "95% CI low ($)": 3886.4958702784,
+        "95% CI high ($)": 5502.5992173087,
+        "two-sided bootstrap p": 0.0005,
+        "verdict": "final model worse"
+      }
+    ],
+    "cv_folds": 5,
+    "cv_epochs": 7,
+    "n_regions": 25,
+    "cv": [
+      {
+        "index": 0,
+        "scheme": "random",
+        "fold": 0,
+        "n_train": 14035,
+        "n_test": 3509,
+        "MSE": 0.2688704133,
+        "MAE": 0.4119467139,
+        "R2": 0.7021868229,
+        "seconds": 0.30473825
+      },
+      {
+        "index": 1,
+        "scheme": "random",
+        "fold": 1,
+        "n_train": 14035,
+        "n_test": 3509,
+        "MSE": 0.295740813,
+        "MAE": 0.4319514334,
+        "R2": 0.6764398813,
+        "seconds": 0.331697907
+      },
+      {
+        "index": 2,
+        "scheme": "random",
+        "fold": 2,
+        "n_train": 14035,
+        "n_test": 3509,
+        "MSE": 0.288399756,
+        "MAE": 0.4214563072,
+        "R2": 0.6818938255,
+        "seconds": 0.296932045
+      },
+      {
+        "index": 3,
+        "scheme": "random",
+        "fold": 3,
+        "n_train": 14035,
+        "n_test": 3509,
+        "MSE": 0.2659114897,
+        "MAE": 0.4075506926,
+        "R2": 0.6983306408,
+        "seconds": 0.293757401
+      },
+      {
+        "index": 4,
+        "scheme": "random",
+        "fold": 4,
+        "n_train": 14036,
+        "n_test": 3508,
+        "MSE": 0.2702568471,
+        "MAE": 0.4167481065,
+        "R2": 0.7045494318,
+        "seconds": 0.285448382
+      },
+      {
+        "index": 5,
+        "scheme": "spatial",
+        "fold": 0,
+        "n_train": 14065,
+        "n_test": 3479,
+        "MSE": 0.46206218,
+        "MAE": 0.480053395,
+        "R2": 0.463158071,
+        "seconds": 0.289225303
+      },
+      {
+        "index": 6,
+        "scheme": "spatial",
+        "fold": 1,
+        "n_train": 13988,
+        "n_test": 3556,
+        "MSE": 0.2464885265,
+        "MAE": 0.3959678113,
+        "R2": 0.7142435312,
+        "seconds": 0.284479492
+      },
+      {
+        "index": 7,
+        "scheme": "spatial",
+        "fold": 2,
+        "n_train": 14030,
+        "n_test": 3514,
+        "MSE": 0.3535416126,
+        "MAE": 0.4782418907,
+        "R2": 0.6445323229,
+        "seconds": 0.281208419
+      },
+      {
+        "index": 8,
+        "scheme": "spatial",
+        "fold": 3,
+        "n_train": 14062,
+        "n_test": 3482,
+        "MSE": 0.3139303029,
+        "MAE": 0.4520352781,
+        "R2": 0.6238276958,
+        "seconds": 0.281173755
+      },
+      {
+        "index": 9,
+        "scheme": "spatial",
+        "fold": 4,
+        "n_train": 14031,
+        "n_test": 3513,
+        "MSE": 0.3062507808,
+        "MAE": 0.4255909026,
+        "R2": 0.6632523537,
+        "seconds": 0.291069439
+      }
+    ],
+    "cv_optimism_pct": 6.806680672944854,
+    "conformal": [
+      {
+        "index": 0,
+        "promised coverage": 0.5,
+        "half-width ($)": 35450.7446289062,
+        "test coverage": 0.5174418605,
+        "coverage at the ceiling": 0.1666666667,
+        "coverage below the ceiling": 0.5215686275
+      },
+      {
+        "index": 1,
+        "promised coverage": 0.6,
+        "half-width ($)": 43416.1305427551,
+        "test coverage": 0.5998062016,
+        "coverage at the ceiling": 0.25,
+        "coverage below the ceiling": 0.6039215686
+      },
+      {
+        "index": 2,
+        "promised coverage": 0.7,
+        "half-width ($)": 53927.4334907532,
+        "test coverage": 0.7099483204,
+        "coverage at the ceiling": 0.3888888889,
+        "coverage below the ceiling": 0.7137254902
+      },
+      {
+        "index": 3,
+        "promised coverage": 0.8,
+        "half-width ($)": 66061.1867904663,
+        "test coverage": 0.8026485788,
+        "coverage at the ceiling": 0.5277777778,
+        "coverage below the ceiling": 0.8058823529
+      },
+      {
+        "index": 4,
+        "promised coverage": 0.9,
+        "half-width ($)": 84722.1612930298,
+        "test coverage": 0.8995478036,
+        "coverage at the ceiling": 0.7222222222,
+        "coverage below the ceiling": 0.9016339869
+      },
+      {
+        "index": 5,
+        "promised coverage": 0.95,
+        "half-width ($)": 102337.5511169434,
+        "test coverage": 0.9521963824,
+        "coverage at the ceiling": 0.8611111111,
+        "coverage below the ceiling": 0.9532679739
+      }
+    ],
+    "conformal_q90": 0.8472216129302979,
+    "coverage90_by_city": {
+      "San Francisco": 0.8372641509433962,
+      "San Jose": 0.8926174496644296,
+      "Fresno": 0.9045454545454545,
+      "Sacramento": 0.9103641456582633,
+      "Los Angeles": 0.9120258272800645,
+      "San Diego": 0.9201183431952663
+    },
+    "slices": {
+      "nearest major city": [
+        {
+          "slice": "San Francisco",
+          "block groups": 424,
+          "MAE ($)": 48261.24609375,
+          "CI low ($)": 44781.1914980412,
+          "CI high ($)": 51769.3686485291,
+          "mean signed error ($)": -10755.6240234375
+        },
+        {
+          "slice": "San Jose",
+          "block groups": 298,
+          "MAE ($)": 42805.21484375,
+          "CI low ($)": 38899.3706554174,
+          "CI high ($)": 46758.8119953871,
+          "mean signed error ($)": 1843.6597900391
+        },
+        {
+          "slice": "Sacramento",
+          "block groups": 357,
+          "MAE ($)": 40816.57421875,
+          "CI low ($)": 37645.0169831514,
+          "CI high ($)": 43766.270428896,
+          "mean signed error ($)": 15538.69140625
+        },
+        {
+          "slice": "Los Angeles",
+          "block groups": 1239,
+          "MAE ($)": 40071.64453125,
+          "CI low ($)": 38252.0212233067,
+          "CI high ($)": 41913.5461747646,
+          "mean signed error ($)": -3297.0979003906
+        },
+        {
+          "slice": "Fresno",
+          "block groups": 440,
+          "MAE ($)": 38716.421875,
+          "CI low ($)": 35893.7668055296,
+          "CI high ($)": 42087.9182219505,
+          "mean signed error ($)": 10672.6455078125
+        },
+        {
+          "slice": "San Diego",
+          "block groups": 338,
+          "MAE ($)": 38545.38671875,
+          "CI low ($)": 35396.5196013451,
+          "CI high ($)": 41648.6153006554,
+          "mean signed error ($)": 13195.19921875
+        }
+      ],
+      "income band (MedInc quintile)": [
+        {
+          "slice": "40-60%",
+          "block groups": 619,
+          "MAE ($)": 42230.765625,
+          "CI low ($)": 39686.6586059332,
+          "CI high ($)": 44969.0246582031,
+          "mean signed error ($)": -2489.4362792969
+        },
+        {
+          "slice": "60-80%",
+          "block groups": 619,
+          "MAE ($)": 41740.421875,
+          "CI low ($)": 39102.530926466,
+          "CI high ($)": 44328.3707648516,
+          "mean signed error ($)": 5129.0888671875
+        },
+        {
+          "slice": "lowest 20%",
+          "block groups": 620,
+          "MAE ($)": 40802.3046875,
+          "CI low ($)": 38194.5316493511,
+          "CI high ($)": 43643.4035748243,
+          "mean signed error ($)": 6509.5747070312
+        },
+        {
+          "slice": "top 20%",
+          "block groups": 619,
+          "MAE ($)": 40699.1484375,
+          "CI low ($)": 38469.1455960274,
+          "CI high ($)": 42911.684140563,
+          "mean signed error ($)": -2393.2534179688
+        },
+        {
+          "slice": "20-40%",
+          "block groups": 619,
+          "MAE ($)": 40442.98828125,
+          "CI low ($)": 37830.4207324982,
+          "CI high ($)": 42889.7022455931,
+          "mean signed error ($)": 3907.4611816406
+        }
+      ],
+      "price ceiling": [
+        {
+          "slice": "at the ceiling",
+          "block groups": 36,
+          "MAE ($)": 64840.74609375,
+          "CI low ($)": 54579.6883106232,
+          "CI high ($)": 75086.0205292702,
+          "mean signed error ($)": -37639.48828125
+        },
+        {
+          "slice": "below the ceiling",
+          "block groups": 3060,
+          "MAE ($)": 40904.67578125,
+          "CI low ($)": 39726.642370224,
+          "CI high ($)": 42017.1189308167,
+          "mean signed error ($)": 2602.0249023438
+        }
+      ],
+      "input extremity": [
+        {
+          "slice": "an input beyond 4 SD",
+          "block groups": 39,
+          "MAE ($)": 73414.5703125,
+          "CI low ($)": 51007.4129700661,
+          "CI high ($)": 102275.6192088127,
+          "mean signed error ($)": 53322.39453125
+        },
+        {
+          "slice": "all inputs within 4 SD",
+          "block groups": 3057,
+          "MAE ($)": 40771.8046875,
+          "CI low ($)": 39675.7081151009,
+          "CI high ($)": 41840.3460085392,
+          "mean signed error ($)": 1481.060546875
+        }
+      ]
+    }
+  }
+}

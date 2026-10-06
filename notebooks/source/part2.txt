@@ -1,0 +1,448 @@
+# %% [markdown]
+<a id="step3"></a>
+
+## 3. Baseline model: build and train
+
+The baseline is the reference configuration for every later comparison.
+
+| Component | Setting |
+|---|---|
+| Input | 8 standardised features |
+| Hidden layer | 64 units, ReLU |
+| Output | 1 unit, linear activation |
+| Parameters | 8 x 64 + 64 = 576 in the hidden layer, 64 + 1 = 65 in the output layer, 641 in total |
+| Optimiser | Adam with Keras defaults, learning rate 0.001 (Kingma & Ba, 2014) |
+| Loss and metric | mean squared error (loss), mean absolute error (metric) |
+| Batch size and epochs | 64 and 100 |
+| Initialisation | Keras defaults: Glorot-uniform weights, zero biases |
+
+A single hidden layer is enough in principle: with sufficiently many units, a one-hidden-layer network can approximate any continuous function on a bounded domain to any accuracy (Hornik et al., 1989). The theorem says nothing about how many units are needed or how easily they train, and those are the practical questions Steps 4 and 5 ask. ReLU is the default activation because it does not saturate for positive inputs, which keeps gradients alive, and it is cheap to compute (Nair & Hinton, 2010; Glorot et al., 2011).
+
+To report the epoch with the lowest validation loss without interfering with training, I attach the `BestEpochTracker` callback defined in Section 0. It copies the weights whenever validation loss reaches a new minimum and never stops training, so the curves below show all 100 epochs.
+
+# %%
+BASELINE_CFG = make_cfg(hidden_units=64, activation="relu", seed=SEED)
+
+set_global_determinism(SEED)      # same seed -> same initial weights and the same batch order
+baseline_model = build_shallow_net(hidden_units=64, activation="relu", n_features=X_train_s.shape[1],
+                                   name="baseline_relu64")
+baseline_model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+baseline_model.summary()
+
+# %%
+tracker = BestEpochTracker(monitor="val_loss")
+t0 = time.perf_counter()
+history = baseline_model.fit(
+    X_train_s, y_train,
+    validation_data=(X_val_s, y_val),
+    epochs=EPOCHS,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    verbose=0,
+    callbacks=[tracker],
+)
+baseline = package_result("baseline_relu64", BASELINE_CFG, history.history, tracker,
+                          time.perf_counter() - t0, baseline_model.count_params())
+RUN_LOG[baseline["name"]] = baseline
+print_run(baseline)
+
+# %%
+tr, va = history_arrays(baseline)
+h = baseline["history"]
+ep = np.arange(1, len(va) + 1)
+s3 = curve_stats(baseline)
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 4.4), gridspec_kw={"width_ratios": [1.3, 1, 0.95]})
+plot_curves(axes[0], baseline)
+nice_log_y(axes[0])
+axes[0].set_ylabel("MSE (log scale)")
+axes[0].legend(loc="upper right")
+axes[0].set_title("Loss (MSE)")
+
+axes[1].plot(ep, h["mae"], color=TRAIN_C, lw=1.8, label="training")
+axes[1].plot(ep, h["val_mae"], color=VAL_C, lw=1.8, label="validation")
+nice_log_y(axes[1])
+axes[1].set_xlabel("Epoch")
+axes[1].set_ylabel("MAE (log scale)")
+axes[1].legend(loc="upper right")
+axes[1].set_title("Mean absolute error (metric)")
+
+gap = va - tr
+axes[2].plot(ep, gap, color=INK, lw=1.6)
+axes[2].axhline(0, color=SUBTLE, lw=1, ls=":")
+axes[2].fill_between(ep, 0, gap, where=gap > 0, color=VAL_C, alpha=0.18, lw=0, interpolate=True)
+axes[2].fill_between(ep, 0, gap, where=gap <= 0, color=TRAIN_C, alpha=0.18, lw=0, interpolate=True)
+axes[2].set_xlabel("Epoch")
+axes[2].set_ylabel("validation MSE - training MSE")
+axes[2].set_title("Generalisation gap")
+headline(fig, "Baseline (64 ReLU units): training and validation curves",
+         f"Best validation MSE {s3['best_val_mse']:.4f} at epoch {s3['best_epoch']}; at epoch {len(va)} the validation "
+         f"loss is {s3['end_above_best_pct']:.1f}% above its best and the gap is {s3['gap_end']:+.4f}")
+plt.show()
+
+display(stats_frame({"baseline (64 ReLU)": baseline}))
+
+# %% [markdown]
+### 3.1 Interpretation of the baseline curves
+
+The baseline learns quickly and cleanly. Validation MSE falls from 0.697 after the first epoch to 0.383 by epoch 10 and 0.330 by epoch 50, and 95% of the total improvement is in place by epoch 33. After that both curves keep sliding slowly downwards. Over the last 20 epochs training MSE fell by another 2.1% and validation MSE by 1.7%, and the lowest validation loss of the run, 0.3151, came in the very last epoch.
+
+There is no sign of overfitting. The validation curve never turns upwards, and at epoch 100 the gap between the curves is small: 0.025, or 8.6% of the training MSE. For the first few epochs the validation loss is actually below the training loss. That is an artefact of how Keras reports the losses, not a property of the model: the training loss is averaged over an epoch during which the weights are still improving, while the validation loss is measured with the weights at the end of the epoch.
+
+If anything, the curves point to mild underfitting, or more precisely to a model that has not finished converging. With both losses still falling, 64 units trained for 100 epochs leave accuracy on the table. That raises two questions: does the network need more capacity, which Step 4 tests, or more training, which the tuning extension in 5b tests?
+
+# %% [markdown]
+<a id="step4"></a>
+
+## 4. Experiment: hidden-layer size
+
+| | |
+|---|---|
+| **What changes** | the number of hidden units: 16, 64 and 256 (161, 641 and 2,561 parameters) |
+| **What stays fixed** | data split, scaler, ReLU, Adam with default settings, MSE loss, MAE metric, batch size 64, 100 epochs, seed 42, default initialisation |
+| **Why** | width sets the capacity of a shallow network. Too little capacity underfits, with high training and validation loss; more capacity fits the training data more closely, and enough of it opens a gap between training and validation loss (Goodfellow et al., 2016; Hastie et al., 2009) |
+
+**Expectation, written before training.** 16 units should underfit, and 256 units should reach the lowest training loss. Whether 256 units also reach the lowest *validation* loss within 100 epochs is the open question.
+
+**Selection rule, written before training.** A single run can rank two configurations differently from a second run that differs only in its random seed, so a one-seed comparison can mistake noise for an effect (Bouthillier et al., 2021). After the main seed-42 comparison I therefore repeat every width with five seeds and compare the mean best validation loss. If a smaller network's mean lies within one standard error of the best mean, I take the smaller network, following the one-standard-error rule (Hastie et al., 2009). The test set plays no part in this decision.
+
+# %%
+WIDTHS = [16, 64, 256]
+width_runs = {u: run_experiment(make_cfg(u, "relu", seed=SEED), name=f"w{u}_relu_s{SEED}") for u in WIDTHS}
+
+# Reproducibility check: the 64-unit run has exactly the baseline's configuration and seed.
+repro_gap = float(np.max(np.abs(np.asarray(width_runs[64]["history"]["val_loss"])
+                                - np.asarray(baseline["history"]["val_loss"]))))
+print(f"\nLargest per-epoch difference in validation loss between the Step 3 baseline and the Step 4 "
+      f"64-unit run: {repro_gap:.2e}")
+
+# %% [markdown]
+### 4.1 Results table (seed 42)
+
+The first three columns after the parameter count are the three core measurements. The remaining columns support the interpretation: the validation loss at the last epoch (to see whether the curve turned upwards after its best point), the gap between validation and training loss at the last epoch, and the number of epochs each model needed to achieve 95% of its total improvement in validation loss.
+
+# %%
+width_table = experiment_table(width_runs, "Hidden units")
+display(width_table.round(4))
+
+# %%
+fig, axes = plt.subplots(1, 3, figsize=(14, 4.3), sharey=True)
+for ax, u in zip(axes, WIDTHS):
+    plot_curves(ax, width_runs[u])
+    nice_log_y(ax)
+    ax.set_title(f"{u} hidden units ({width_runs[u]['n_params']:,} parameters)")
+axes[0].set_ylabel("MSE (log scale)")
+axes[0].legend(loc="upper right")
+headline(fig, "Training and validation curves by hidden-layer size (ReLU, everything else fixed)",
+         "Best validation MSE: " + "; ".join(f"{u} units {width_runs[u]['best_val_loss']:.4f} "
+                                              f"(epoch {width_runs[u]['best_epoch']})" for u in WIDTHS))
+plt.show()
+
+# %%
+final_train = {u: width_runs[u]["final_train_loss"] for u in WIDTHS}
+monotone = all(final_train[a] > final_train[b] for a, b in zip(WIDTHS, WIDTHS[1:]))
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.3), sharey=True)
+for u in WIDTHS:
+    tr_u, va_u = history_arrays(width_runs[u])
+    ep_u = np.arange(1, len(va_u) + 1)
+    axes[0].plot(ep_u, va_u, color=WIDTH_C[u], lw=1.9, label=f"{u} units")
+    axes[1].plot(ep_u, tr_u, color=WIDTH_C[u], lw=1.9, label=f"{u} units")
+    b = width_runs[u]["best_epoch"]
+    axes[0].scatter([b], [va_u[b - 1]], color=WIDTH_C[u], marker="*", s=90, zorder=5, edgecolor=INK, linewidth=0.5)
+for ax, title in zip(axes, ["Validation MSE (stars mark each model's best epoch)", "Training MSE"]):
+    nice_log_y(ax)
+    ax.set_title(title)
+    ax.set_xlabel("Epoch")
+    ax.legend(loc="upper right")
+axes[0].set_ylabel("MSE (log scale)")
+headline(fig, "Wider networks fit the training data more closely" if monotone else
+         "Training fit does not improve steadily with width",
+         "Final training MSE: " + "; ".join(f"{u} units {final_train[u]:.4f}" for u in WIDTHS))
+plt.show()
+
+# %% [markdown]
+### 4.2 Robustness check across random seeds (extension)
+
+Each width is retrained with four more seeds. Only the seed changes, which alters the initial weights and the order of mini-batches; the data split and everything else stay fixed, so the spread across seeds measures training noise rather than sampling noise.
+
+# %%
+width_seed_runs = {}
+for u in WIDTHS:
+    width_seed_runs[u] = {s: (width_runs[u] if s == SEED else
+                              run_experiment(make_cfg(u, "relu", seed=s), name=f"w{u}_relu_s{s}"))
+                          for s in ROBUSTNESS_SEEDS}
+width_seed_table = seed_summary(width_seed_runs)
+width_seed_table.index.name = "Hidden units"
+display(width_seed_table.round(4))
+
+# %%
+fig, axes = plt.subplots(1, 2, figsize=(13, 4.4))
+ax = axes[0]
+jitter = np.random.default_rng(0)
+for i, u in enumerate(WIDTHS):
+    vals = np.array([r["best_val_loss"] for r in width_seed_runs[u].values()])
+    ax.scatter(i + jitter.uniform(-0.08, 0.08, len(vals)), vals, color=WIDTH_C[u], s=38, alpha=0.9,
+               edgecolor="white", linewidth=0.6, zorder=3)
+    m, se = width_seed_table.loc[u, "mean best val loss"], width_seed_table.loc[u, "SE"]
+    ax.errorbar(i + 0.24, m, yerr=0 if not np.isfinite(se) else se, fmt="D", color=INK, ms=6, capsize=4, zorder=4)
+    ax.scatter([i], [width_seed_runs[u][SEED]["best_val_loss"]], s=110, facecolor="none", edgecolor=INK, lw=1.1, zorder=5)
+ax.set_xticks(range(len(WIDTHS)), [f"{u} units" for u in WIDTHS])
+ax.set_ylabel("Best validation MSE")
+ax.set_title(f"Best validation MSE for each of {len(ROBUSTNESS_SEEDS)} seeds")
+ax.legend(handles=[Line2D([], [], marker="o", ls="", color=SUBTLE, label="one seed"),
+                   Line2D([], [], marker="D", ls="", color=INK, label="mean ± 1 standard error"),
+                   Line2D([], [], marker="o", ls="", markerfacecolor="none", markeredgecolor=INK,
+                          ms=9, label=f"seed {SEED} (table above)")], loc="upper right")
+
+ax = axes[1]
+params = [width_runs[u]["n_params"] for u in WIDTHS]
+ax.errorbar(params, width_seed_table["mean best val loss"], yerr=np.nan_to_num(width_seed_table["SD"].to_numpy()),
+            color=VAL_C, marker="o", lw=1.8, capsize=4, label="best validation MSE (mean ± SD)")
+ax.plot(params, width_seed_table["mean final train loss"], color=TRAIN_C, marker="s", lw=1.8,
+        label="final training MSE (mean)")
+ax.set_xscale("log")
+ax.set_xticks(params, [f"{p:,}\n({u} units)" for p, u in zip(params, WIDTHS)])
+ax.xaxis.set_minor_locator(mpl.ticker.NullLocator())
+ax.set_xlabel("Trainable parameters (log scale)")
+ax.set_ylabel("MSE")
+ax.legend(loc="upper right")
+ax.set_title("Capacity curve")
+spread_ratio = width_seed_table["SD"].mean() / np.ptp(width_seed_table["mean best val loss"].to_numpy())
+headline(fig, "How much of the width effect survives a change of seed?",
+         f"Average seed-to-seed SD is {spread_ratio:.0%} of the range between the best and worst width means")
+plt.show()
+
+# %% [markdown]
+### 4.3 Selecting the hidden-layer size (validation data only)
+
+# %%
+choice, best_key, threshold = one_se_choice(width_seed_table, order=sorted(WIDTHS))
+single_best = min(WIDTHS, key=lambda u: width_runs[u]["best_val_loss"])
+CHOSEN_UNITS = int(choice)
+width_decision = pd.Series({
+    f"lowest best validation loss, seed-{SEED} run": f"{single_best} units ({width_runs[single_best]['best_val_loss']:.4f})",
+    f"lowest mean over {len(ROBUSTNESS_SEEDS)} seeds": f"{best_key} units ({width_seed_table.loc[best_key, 'mean best val loss']:.4f}"
+                                                      f" ± {width_seed_table.loc[best_key, 'SE']:.4f} SE)",
+    "one-standard-error threshold": f"{threshold:.4f}",
+    "smallest width within the threshold": f"{choice} units",
+    "selected hidden-layer size": f"{CHOSEN_UNITS} units",
+}, name="Step 4 decision (validation data only)")
+display(width_decision.to_frame())
+
+# %% [markdown]
+### 4.4 Interpretation: capacity, convergence and validation performance
+
+Width behaved as capacity theory predicts, with one twist. Training error fell steadily as the layer widened: averaged over five seeds, the final training MSE was 0.316 with 16 units, 0.292 with 64 and 0.267 with 256 (Goodfellow et al., 2016). Validation error fell in step, from 0.331 to 0.315 and 0.292, so the extra capacity went into structure that generalises rather than into noise. The twist is that no width overfitted within 100 epochs. The generalisation gap did widen with width (0.018, 0.025 and 0.031 at the last epoch of the seed-42 runs), which is the early signature of overfitting, but even at 256 units the validation curve was still trending down, and the best epoch came at 96 of 100.
+
+The 16-unit network underfits: it has the highest training and validation errors, and its curves flatten first. The 256-unit network kept improving for longer, needing 72 epochs to achieve 95% of its improvement, against about 33 for the two smaller networks, because it kept finding structure they could not represent. Its validation curve is also visibly noisier: it ended 2.2% above its best value (0.298 against 0.292). That is why keeping the best-epoch weights matters more as networks grow.
+
+The seed analysis makes the decision unambiguous. Seed-to-seed standard deviations were 0.003 to 0.004, while the gap between 64 and 256 units was 0.023, about six standard deviations; the best validation losses across seeds do not even overlap between widths. The one-standard-error threshold was 0.2938 and only 256 units fell below it (Hastie et al., 2009), so 256 units go forward to Step 5.
+
+# %% [markdown]
+<a id="step5"></a>
+
+## 5. Experiment: activation function
+
+| | |
+|---|---|
+| **What changes** | the hidden-layer activation: ReLU, tanh and sigmoid |
+| **What stays fixed** | the hidden-layer size selected in Step 4 and every other setting, including Keras default initialisation (Glorot-uniform weights, zero biases) for all three models |
+| **Why** | the activation shapes both what the network can represent and how easily it trains |
+
+**What theory predicts.** Sigmoid and tanh saturate: for large |z| their derivatives approach zero, so a unit that drifts into those regions passes back almost no gradient and stops learning. Sigmoid carries two further handicaps. Its largest derivative is 0.25, a quarter of tanh's, and its outputs are always positive, which LeCun et al. (2012) show slows gradient descent compared with zero-centred units such as tanh. ReLU does not saturate for positive inputs, but a unit whose input is negative for every training example receives no gradient at all (Glorot et al., 2011). The first figure below shows the three functions, their derivatives, and where the standardised training data actually place the first-layer pre-activations at initialisation.
+
+**How I measure convergence and stability.** Besides the best validation loss and its epoch, convergence speed is measured in two ways: the number of epochs needed to reach a common target (110% of the best validation loss achieved by any of the three activations) and the epoch by which each model achieved 95% of its own improvement. Stability is measured as the standard deviation of epoch-to-epoch changes in validation loss over the last 30 epochs, and as the largest single-epoch rise after epoch 10.
+
+**Selection rule.** The same five-seed protocol as Step 4: the lowest mean best validation loss wins, and a tie within one standard error goes to ReLU, the cheapest of the three to compute.
+
+# %%
+z = np.linspace(-6, 6, 601)
+sig = 1 / (1 + np.exp(-z))
+act_f = {"relu": np.maximum(z, 0), "tanh": np.tanh(z), "sigmoid": sig}
+act_d = {"relu": (z > 0).astype(float), "tanh": 1 - np.tanh(z) ** 2, "sigmoid": sig * (1 - sig)}
+# "Saturated" = derivative below 10% of its maximum (|z| > 1.82 for tanh, |z| > 3.64 for sigmoid)
+SAT_LIMITS = {"tanh": float(np.arctanh(np.sqrt(0.9))), "sigmoid": float(np.log((1 + np.sqrt(0.9)) / (1 - np.sqrt(0.9))))}
+
+# First-layer pre-activations at initialisation: the exact initial weights used by the Step 5 models
+set_global_determinism(SEED)
+probe = build_shallow_net(CHOSEN_UNITS, "relu", X_train_s.shape[1])
+W0, b0 = probe.get_layer("hidden").get_weights()
+z0 = (X_train_s @ W0 + b0).ravel()
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 4.1))
+for name in ["relu", "tanh", "sigmoid"]:
+    axes[0].plot(z, act_f[name], color=ACT_C[name], lw=2.2, label=name)
+    axes[1].plot(z, act_d[name], color=ACT_C[name], lw=2.2, label=name)
+for name in ["tanh", "sigmoid"]:
+    lim = SAT_LIMITS[name]
+    axes[1].axvspan(lim, 6, color=ACT_C[name], alpha=0.07)
+    axes[1].axvspan(-6, -lim, color=ACT_C[name], alpha=0.07)
+axes[0].set_ylim(-1.3, 3.0)
+axes[0].set_title("Activation functions")
+axes[1].set_title("Derivatives: the gradient each unit passes back")
+for ax in axes[:2]:
+    ax.set_xlabel("pre-activation z")
+    ax.legend(loc="upper left")
+axes[2].hist(np.clip(z0, -6, 6), bins=120, color=SUBTLE, alpha=0.85)
+axes[2].set_yscale("log")
+axes[2].set_xlabel("pre-activation z (clipped to ±6)")
+axes[2].set_ylabel("unit-example pairs (log scale)")
+axes[2].set_title(f"Pre-activations at initialisation, {CHOSEN_UNITS} units")
+axes[2].text(0.03, 0.96, f"in tanh's flat zone: {np.mean(np.abs(z0) > SAT_LIMITS['tanh']):.2%}\n"
+                          f"in sigmoid's flat zone: {np.mean(np.abs(z0) > SAT_LIMITS['sigmoid']):.2%}\n"
+                          f"inactive for ReLU (z <= 0): {np.mean(z0 <= 0):.1%}",
+             transform=axes[2].transAxes, va="top", fontsize=8.8, color=INK)
+headline(fig, "Why the activation matters: gradient size and saturation",
+         "Shaded bands mark where tanh (blue) and sigmoid (orange) pass back less than 10% of their largest gradient; "
+         "sigmoid's largest gradient is only 0.25")
+plt.show()
+
+# %%
+ACTIVATIONS = ["relu", "tanh", "sigmoid"]
+act_runs = {"relu": width_runs[CHOSEN_UNITS]}     # identical configuration, already trained in Step 4
+for act in ["tanh", "sigmoid"]:
+    act_runs[act] = run_experiment(make_cfg(CHOSEN_UNITS, act, seed=SEED), name=f"w{CHOSEN_UNITS}_{act}_s{SEED}")
+
+# %% [markdown]
+### 5.1 Results table (seed 42)
+
+# %%
+best_any = min(r["best_val_loss"] for r in act_runs.values())
+target_level = 1.10 * best_any
+rows = []
+for act, res in act_runs.items():
+    tr_a, va_a = history_arrays(res)
+    s = curve_stats(res)
+    reached = np.flatnonzero(va_a <= target_level)
+    rows.append({"Activation": act, "Best validation loss": s["best_val_mse"],
+                 "Epoch of best validation loss": s["best_epoch"],
+                 "Final training loss": s["final_train_mse"], "Final validation loss": s["final_val_mse"],
+                 "Epochs to common target": float(reached[0] + 1) if reached.size else np.nan,
+                 "Epochs to 95% of own improvement": s["epochs_to_95pct"],
+                 "Volatility, last 30 epochs (x 1e-3)": s["val_volatility_x1e3"],
+                 "Largest rise after epoch 10": s["max_val_rise"],
+                 "Gap at last epoch": s["gap_end"]})
+act_table = pd.DataFrame(rows).set_index("Activation")
+print(f"Common convergence target = 110% of the best validation loss of any activation = {target_level:.4f} "
+      "(NaN = never reached)")
+display(act_table.round(4))
+
+# %%
+fig, axes = plt.subplots(1, 3, figsize=(14, 4.3), sharey=True)
+for ax, act in zip(axes, ACTIVATIONS):
+    plot_curves(ax, act_runs[act])
+    nice_log_y(ax)
+    ax.axhline(target_level, color=SUBTLE, lw=1, ls=":")
+    ax.set_title(f"{act} ({CHOSEN_UNITS} units)")
+axes[0].set_ylabel("MSE (log scale)")
+axes[0].legend(loc="upper right")
+headline(fig, f"Training and validation curves by activation ({CHOSEN_UNITS} hidden units, everything else fixed)",
+         "Best validation MSE: " + "; ".join(f"{a} {act_runs[a]['best_val_loss']:.4f} (epoch {act_runs[a]['best_epoch']})"
+                                              for a in ACTIVATIONS) + f". Dotted line: common target {target_level:.4f}")
+plt.show()
+
+# %%
+fig, axes = plt.subplots(1, 3, figsize=(14, 4.1), gridspec_kw={"width_ratios": [1.5, 1, 1]})
+for act in ACTIVATIONS:
+    _, va_a = history_arrays(act_runs[act])
+    axes[0].plot(np.arange(1, len(va_a) + 1), va_a, color=ACT_C[act], lw=1.9, label=act)
+axes[0].axhline(target_level, color=SUBTLE, lw=1, ls=":")
+nice_log_y(axes[0])
+axes[0].set_xlabel("Epoch")
+axes[0].set_ylabel("Validation MSE (log scale)")
+axes[0].legend(loc="upper right")
+axes[0].set_title("Validation curves together")
+bars = act_table["Epochs to common target"].fillna(EPOCHS + 5)
+axes[1].bar(ACTIVATIONS, bars[ACTIVATIONS], color=[ACT_C[a] for a in ACTIVATIONS], width=0.55)
+for i, a in enumerate(ACTIVATIONS):
+    v = act_table.loc[a, "Epochs to common target"]
+    axes[1].text(i, bars[a] + 1, "not reached" if np.isnan(v) else f"{v:.0f}", ha="center", fontsize=9)
+axes[1].set_ylabel("Epochs")
+axes[1].set_title("Convergence: epochs to the common target")
+vol = act_table["Volatility, last 30 epochs (x 1e-3)"]
+axes[2].bar(ACTIVATIONS, vol[ACTIVATIONS], color=[ACT_C[a] for a in ACTIVATIONS], width=0.55)
+for i, a in enumerate(ACTIVATIONS):
+    axes[2].text(i, vol[a] * 1.02, f"{vol[a]:.2f}", ha="center", fontsize=9)
+axes[2].set_ylabel("SD of epoch-to-epoch change (x 1e-3)")
+axes[2].set_title("Stability: late-training volatility")
+fastest = act_table["Epochs to common target"].idxmin() if act_table["Epochs to common target"].notna().any() else "none"
+steadiest = vol.idxmin()
+headline(fig, "Convergence speed and stability by activation",
+         f"Fastest to the common target: {fastest}; least volatile over the last 30 epochs: {steadiest}")
+plt.show()
+
+# %% [markdown]
+### 5.2 Robustness across seeds and a look inside the hidden layer (extension)
+
+The seed check repeats Step 4's protocol. The saturation analysis then uses each trained model's best-epoch weights to compute the hidden-layer pre-activations $z = xW_1 + b_1$ for every training example, and counts how often each unit sits in the flat part of its activation. For ReLU, being inactive for roughly half of the examples is normal and even useful (it makes the representation sparse); what matters is whether some units are inactive for almost every example, because those units have stopped learning.
+
+# %%
+act_seed_runs = {"relu": width_seed_runs[CHOSEN_UNITS]}
+for act in ["tanh", "sigmoid"]:
+    act_seed_runs[act] = {s: (act_runs[act] if s == SEED else
+                              run_experiment(make_cfg(CHOSEN_UNITS, act, seed=s), name=f"w{CHOSEN_UNITS}_{act}_s{s}"))
+                          for s in ROBUSTNESS_SEEDS}
+act_seed_table = seed_summary(act_seed_runs)
+act_seed_table.index.name = "Activation"
+display(act_seed_table.round(4))
+
+# %%
+sat_rows, Z_trained = [], {}
+for act, res in act_runs.items():
+    W1, b1 = res["best_weights"][0], res["best_weights"][1]
+    Z = X_train_s @ W1 + b1
+    Z_trained[act] = Z
+    flat = (Z <= 0) if act == "relu" else (np.abs(Z) > SAT_LIMITS[act])
+    sat_rows.append({"Activation": act,
+                     "flat region (ReLU: z <= 0; others: saturated)": "z <= 0" if act == "relu" else f"|z| > {SAT_LIMITS[act]:.2f}",
+                     "share of unit-example pairs in the flat region": flat.mean(),
+                     "units flat for more than 99% of examples": int((flat.mean(axis=0) > 0.99).sum()),
+                     "units in the layer": Z.shape[1],
+                     "median |z|": float(np.median(np.abs(Z)))})
+sat_table = pd.DataFrame(sat_rows).set_index("Activation")
+display(sat_table.round(4))
+
+fig, axes = plt.subplots(1, 3, figsize=(14, 3.9), sharey=True)
+for ax, act in zip(axes, ACTIVATIONS):
+    zz = np.clip(Z_trained[act].ravel(), -12, 12)
+    ax.hist(zz, bins=120, color=ACT_C[act], alpha=0.85)
+    if act == "relu":
+        ax.axvspan(-12, 0, color=SUBTLE, alpha=0.10)
+    else:
+        lim = SAT_LIMITS[act]
+        ax.axvspan(lim, 12, color=SUBTLE, alpha=0.10)
+        ax.axvspan(-12, -lim, color=SUBTLE, alpha=0.10)
+    ax.set_yscale("log")
+    ax.set_title(f"{act}: {sat_table.loc[act, 'share of unit-example pairs in the flat region']:.1%} in the flat region")
+    ax.set_xlabel("trained pre-activation z (clipped to ±12)")
+axes[0].set_ylabel("unit-example pairs (log scale)")
+headline(fig, "Where the trained hidden units operate",
+         "Grey bands: zero gradient for ReLU, less than 10% of the maximum gradient for tanh and sigmoid")
+plt.show()
+
+# %% [markdown]
+### 5.3 Selecting the activation function (validation data only)
+
+# %%
+act_choice, act_best, act_threshold = one_se_choice(act_seed_table, order=ACTIVATIONS)
+single_best_act = min(ACTIVATIONS, key=lambda a: act_runs[a]["best_val_loss"])
+CHOSEN_ACT = str(act_choice)
+FINAL_RES = act_runs[CHOSEN_ACT]          # seed-42 run of the selected configuration
+act_decision = pd.Series({
+    f"lowest best validation loss, seed-{SEED} run": f"{single_best_act} ({act_runs[single_best_act]['best_val_loss']:.4f})",
+    f"lowest mean over {len(ROBUSTNESS_SEEDS)} seeds": f"{act_best} ({act_seed_table.loc[act_best, 'mean best val loss']:.4f}"
+                                                      f" ± {act_seed_table.loc[act_best, 'SE']:.4f} SE)",
+    "one-standard-error threshold": f"{act_threshold:.4f}",
+    "selected activation (ties go to ReLU)": CHOSEN_ACT,
+    "final configuration": f"{CHOSEN_UNITS} {CHOSEN_ACT} units",
+}, name="Step 5 decision (validation data only)")
+display(act_decision.to_frame())
+
+# %% [markdown]
+### 5.4 Interpretation: convergence speed, stability and validation performance
+
+ReLU won on every measure of accuracy and speed. Its mean best validation MSE over five seeds was 0.292, against 0.328 for tanh and 0.359 for sigmoid, and the seed ranges do not overlap. It reached the common target of 0.321 (110% of the best result) after 36 epochs, while neither tanh nor sigmoid reached it within 100. Both smooth activations show a characteristic plateau. Tanh actually started better than ReLU (0.496 after one epoch against 0.567), but it then stalled near 0.48 for ten epochs, and sigmoid only drifted from 0.48 to 0.46 between epochs 10 and 25. Both descended slowly after that, and both were still improving at epoch 100, which is where their best validation losses came.
+
+The mechanism is more interesting than the textbook story. Saturation was not the problem: after training, only 0.9% of tanh pre-activations and 1.2% of sigmoid pre-activations sat on the flat parts of their curves, because standardised inputs and Glorot initialisation keep the pre-activations near zero (Glorot & Bengio, 2010). Near zero, however, both functions are almost linear (the median pre-activation was 0.16 for tanh and 0.40 for sigmoid), so both networks begin life close to a linear model and must grow their weights before the non-linearity starts to pay. Sigmoid is handicapped twice over, since its slope there is only a quarter of tanh's and its outputs are always positive (LeCun et al., 2012). ReLU, in contrast, is non-linear at every scale: its kink at zero exists however small the weights are. About 57% of ReLU unit-example pairs were inactive, which is the normal sparsity of rectifiers rather than a fault (Glorot et al., 2011), and only 4 of the 256 units were effectively dead.
+
+Stability tells the opposite story. ReLU's validation curve was the most volatile late in training: the standard deviation of its epoch-to-epoch changes over the last 30 epochs was 7.2 × 10⁻³, against 4.9 × 10⁻³ for tanh and 4.8 × 10⁻³ for sigmoid. Tanh was also by far the most consistent across seeds, with a standard deviation of 0.0007. The smooth activations learn smoothly but slowly; ReLU learns faster and further but more bumpily. The selection rule rewards accuracy and the best-epoch weights absorb the bumps, so ReLU is selected, and the final configuration is 256 ReLU units.

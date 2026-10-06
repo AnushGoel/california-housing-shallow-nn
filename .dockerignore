@@ -1,0 +1,12 @@
+.git
+.github
+docs
+notebooks
+tests
+scripts
+user_data
+artifacts/runs
+**/__pycache__
+**/*.ipynb
+.streamlit/secrets.toml
+results

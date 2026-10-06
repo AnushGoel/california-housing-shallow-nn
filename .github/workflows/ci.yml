@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"          # weekly, to catch breaking dependency releases
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      - name: Unit, API and app tests
+        run: pytest -q
+      - name: Notebook builds from its sources
+        run: python scripts/build_notebook.py --out /tmp/notebook.ipynb
+      - name: Repository size budget
+        run: python scripts/check_size.py
+      - name: Results report matches the committed artifacts
+        run: python -m housing_app report --check
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the dashboard image
+        run: docker build -t housing-app .
+      - name: Build the API image
+        run: docker build -f api/Dockerfile -t housing-api .

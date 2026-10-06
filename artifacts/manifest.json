@@ -1,0 +1,30 @@
+{
+  "schema_version": 3,
+  "created_utc": "2026-10-06T22:47:13Z",
+  "files": {
+    "results.json": {
+      "sha256": "04e0dc12c0f39048137f8ef57610d8c3e370598eae0f3fb9c4f460c42c8a84ea",
+      "bytes": 42117
+    },
+    "histories.json.gz": {
+      "sha256": "b99fa090a2a1c8ef6f6760c2fdc424ee3e260439fd2ee0839e1e6a6cf6470a89",
+      "bytes": 130027
+    },
+    "dataset.csv.gz": {
+      "sha256": "0b766c0a0249f76226eb5ca70383b8be1f6a3daa9d9c95d37d79dff7ad6fb429",
+      "bytes": 518686
+    },
+    "test_predictions.csv.gz": {
+      "sha256": "0f546fdedf830bf4830e8a1dcb76f7cc1724a4ab659eaa4b1cf7f5eecc7c20f4",
+      "bytes": 126732
+    },
+    "model_final.npz": {
+      "sha256": "c58fbe6a439c2a7ecae911e557473e0413c3e2ebcbc75845898fdf3788cc0359",
+      "bytes": 26776
+    },
+    "model_tuned.npz": {
+      "sha256": "a51c322bf7df9559ce1c0d82e1f720395c4a79023c63c4a17019c56a922112c1",
+      "bytes": 26677
+    }
+  }
+}

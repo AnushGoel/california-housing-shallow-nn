@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "California housing: a shallow neural network, studied carefully"
+abstract: >-
+  A controlled study of capacity, activation and generalisation in one-hidden-layer neural networks on the
+  California Housing data, tested with paired bootstrap comparisons, random and spatial cross-validation and
+  split-conformal intervals, and served through a Streamlit dashboard, a REST API and a command line.
+authors:
+  - family-names: Goel
+    given-names: Anush
+version: 2.1.0
+date-released: "2026-10-06"
+license: MIT
+keywords:
+  - neural networks
+  - regression
+  - conformal prediction
+  - spatial cross-validation
+  - Shapley values
+  - Streamlit
+references:
+  - type: article
+    authors:
+      - family-names: Pace
+        given-names: R. Kelley
+      - family-names: Barry
+        given-names: Ronald
+    title: "Sparse spatial autoregressions"
+    journal: "Statistics & Probability Letters"
+    volume: 33
+    issue: 3
+    start: 291
+    end: 297
+    year: 1997
+    doi: "10.1016/S0167-7152(96)00140-X"

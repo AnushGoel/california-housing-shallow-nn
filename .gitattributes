@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.gz binary
+*.npz binary
+*.png binary
+*.pdf binary
+
+# Artifacts are checksummed byte for byte (artifacts/manifest.json), so git must never rewrite their line endings.
+# Without this, a commit made on Windows would change results.json and break its checksum.
+artifacts/** -text
+tests/fixtures/** -text
+results/** -text
