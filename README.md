@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%20to%203.12-1D4E89)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-006747)](LICENSE)
 <!-- Live demo: after deploying on Streamlit Community Cloud, put this badge here with your app's address:
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://YOUR-APP.streamlit.app) -->
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://4brqktfzqycjkedqp8myvm.streamlit.app/)
 
 How much can a single hidden layer learn about house prices, and how far can its answers be trusted? This project
 works through both questions on the 20,640 census block groups of the California Housing data (Pace & Barry, 1997).
